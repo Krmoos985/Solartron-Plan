@@ -26,7 +26,8 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                 subTaskMustMaintainOrder(factory),        // HC5 同一母任务的子任务保序
 
                 // ===== 中等约束 =====
-                // TODO Phase 3: MC1, MC2
+                filterChangePreferredOrder(factory),      // MC1 过滤器后20天优先顺序
+                highInventoryShouldNotBeAdvanced(factory),// MC2 库存>30天不前移
 
                 // ===== 软约束 =====
                 // TODO Phase 3: SC1-SC5
@@ -84,6 +85,71 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                                 order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
                 .penalize(HardMediumSoftScore.ONE_HARD)
                 .asConstraint("HC4-厚度单调流向");
+    }
+
+    // ===== MC1：过滤器后20天优先顺序 =====
+
+    private static final java.util.Map<String, Integer> FILTER_PREFERRED_ORDER = java.util.Map.of(
+            "T19EST", 1,
+            "T4FDX", 2,
+            "T4FDY", 2,
+            "T5FDX", 3,
+            "T7FDX", 4
+    );
+
+    /**
+     * MC1：换过滤器后20天内，优先生产特定的型号（按预设字典排序）。
+     * 如果处于20天保护期内出现非预期倒装，每跨越一级扣除 1 Medium。
+     */
+    Constraint filterChangePreferredOrder(ConstraintFactory factory) {
+        return factory.forEachUniquePair(MotherRollOrder.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(order -> 
+                                order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
+                .filter((o1, o2) -> {
+                    if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
+                    Integer rank1 = FILTER_PREFERRED_ORDER.get(o1.getProductCode());
+                    Integer rank2 = FILTER_PREFERRED_ORDER.get(o2.getProductCode());
+                    if (rank1 == null || rank2 == null) return false;
+                    
+                    if (o1.getSequenceIndex() < o2.getSequenceIndex()) {
+                        return rank1 > rank2; // rank 数值越小代表越优先，若先执行的任务 rank 更大即为倒置
+                    } else if (o2.getSequenceIndex() < o1.getSequenceIndex()) {
+                        return rank2 > rank1; // o2 在前，它却更大，违规
+                    }
+                    return false;
+                })
+                .join(com.changyang.scheduling.domain.FilterChangePlan.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal((o1, o2) -> o1.getAssignedLine().getId(), 
+                                com.changyang.scheduling.domain.FilterChangePlan::getLineId))
+                .filter((o1, o2, filter) -> {
+                    if (o1.getStartTime() == null || o2.getStartTime() == null) return false;
+                    long d1 = java.time.temporal.ChronoUnit.DAYS.between(filter.getChangeTime(), o1.getStartTime());
+                    long d2 = java.time.temporal.ChronoUnit.DAYS.between(filter.getChangeTime(), o2.getStartTime());
+                    return d1 >= 0 && d1 <= 20 && d2 >= 0 && d2 <= 20;
+                })
+                .penalize(HardMediumSoftScore.ONE_MEDIUM, (o1, o2, filter) -> {
+                    int rank1 = FILTER_PREFERRED_ORDER.get(o1.getProductCode());
+                    int rank2 = FILTER_PREFERRED_ORDER.get(o2.getProductCode());
+                    return Math.abs(rank1 - rank2);
+                })
+                .asConstraint("MC1-过滤器后20天优先顺序");
+    }
+
+    // ===== MC2：库存>30天不前移 =====
+
+    /**
+     * MC2：库存>30天的订单不应提前生产。
+     * 如果实际开始时间早于预期开始时间，按照提前的小时数处于中等程度惩罚。
+     */
+    Constraint highInventoryShouldNotBeAdvanced(ConstraintFactory factory) {
+        return factory.forEach(MotherRollOrder.class)
+                .filter(order -> order.getStartTime() != null 
+                        && order.getExpectedStartTime() != null
+                        && order.getInventorySupplyDays() > 30.0
+                        && order.getStartTime().isBefore(order.getExpectedStartTime()))
+                .penalize(HardMediumSoftScore.ONE_MEDIUM, order -> 
+                        (int) java.time.temporal.ChronoUnit.HOURS.between(order.getStartTime(), order.getExpectedStartTime()))
+                .asConstraint("MC2-高库存不前移");
     }
 
     // ===== HC1：产品-产线兼容性 =====

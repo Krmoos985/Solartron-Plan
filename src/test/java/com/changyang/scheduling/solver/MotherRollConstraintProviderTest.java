@@ -162,4 +162,61 @@ class MotherRollConstraintProviderTest {
                 .given(line, o1, o2, o4)
                 .penalizesBy(0);
     }
+
+    @Test
+    void mc1FilterChangePreferredOrder() {
+        ProductionLine line = new ProductionLine("L1", "一线", "L1", null);
+        LocalDateTime base = LocalDateTime.of(2026, 3, 10, 8, 0);
+
+        // Filter change at Day 0
+        com.changyang.scheduling.domain.FilterChangePlan filter = new com.changyang.scheduling.domain.FilterChangePlan();
+        filter.setLineId("L1");
+        filter.setChangeTime(base);
+
+        // T19EST has rank 1, T7FDX has rank 4. T19EST should be before T7FDX.
+        MotherRollOrder o1 = new MotherRollOrder();
+        o1.setId("o1"); o1.setProductCode("T19EST"); o1.setAssignedLine(line);
+        o1.setStartTime(base.plusDays(5)); // Within 20 days
+        
+        MotherRollOrder o2 = new MotherRollOrder();
+        o2.setId("o2"); o2.setProductCode("T7FDX"); o2.setAssignedLine(line);
+        o2.setStartTime(base.plusDays(10)); // Within 20 days
+
+        // valid order: rank 1 before rank 4
+        o1.setSequenceIndex(0); o2.setSequenceIndex(1);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::filterChangePreferredOrder)
+                .given(line, filter, o1, o2)
+                .penalizesBy(0);
+
+        // invalid order: rank 4 before rank 1 (difference is 4 - 1 = 3)
+        o1.setSequenceIndex(1); o2.setSequenceIndex(0);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::filterChangePreferredOrder)
+                .given(line, filter, o1, o2)
+                .penalizesBy(3);
+    }
+
+    @Test
+    void mc2HighInventoryShouldNotBeAdvanced() {
+        ProductionLine line = new ProductionLine("L1", "一线", "L1", null);
+
+        MotherRollOrder order = new MotherRollOrder();
+        order.setId("O1"); order.setAssignedLine(line);
+        order.setMonthlyShipment(30);
+        order.setCurrentInventory(40); // (40/30)*30 = 40 days > 30
+
+        LocalDateTime expectedTime = LocalDateTime.of(2026, 3, 15, 12, 0);
+        order.setExpectedStartTime(expectedTime);
+        
+        // Scenario 1: started on time or later
+        order.setStartTime(expectedTime.plusHours(5));
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::highInventoryShouldNotBeAdvanced)
+                .given(line, order)
+                .penalizesBy(0);
+
+        // Scenario 2: advanced by 10 hours
+        order.setStartTime(expectedTime.minusHours(10));
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::highInventoryShouldNotBeAdvanced)
+                .given(line, order)
+                .penalizesBy(10);
+    }
 }
