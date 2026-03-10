@@ -15,5 +15,5 @@ timefold:
 # 日志
 logging:
   level:
-    ai.timefold.solver: INFO
-    com.changyang.scheduling: DEBUG
+    "[ai.timefold.solver]": INFO
+    "[com.changyang.scheduling]": DEBUG

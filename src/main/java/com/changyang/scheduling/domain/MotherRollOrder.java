@@ -129,19 +129,24 @@ public class MotherRollOrder {
             return;
         }
 
-        // 换型时间计算（简化版：同产品0分钟，不同产品暂定30分钟）
-        // TODO Phase 1：替换为 ChangeoverService 的 HashMap 查询
-        if (previousOrder == null) {
-            changeoverMinutes = 0;
-            startTime = assignedLine.getAvailableFrom();
+        // 1. 换型时间计算
+        // 尝试从 ChangeoverService 获取，若其尚未初始化（如普通单测），则降级到简单计算
+        if (com.changyang.scheduling.service.ChangeoverService.getInstance() != null) {
+            changeoverMinutes = com.changyang.scheduling.service.ChangeoverService.getInstance().calcChangeover(previousOrder, this);
         } else {
             changeoverMinutes = calcSimpleChangeover(previousOrder);
+        }
+
+        // 2. 计划开始时间
+        if (previousOrder == null) {
+            startTime = assignedLine.getAvailableFrom();
+        } else {
             LocalDateTime prevEnd = previousOrder.getEndTime();
             startTime = (prevEnd != null) ? prevEnd.plusMinutes(changeoverMinutes) : null;
         }
 
-        // 计算结束时间
-        // TODO Phase 1：加入 FactoryCalendar 跳过非工作时间
+        // 3. 计算结束时间
+        // TODO Phase 1 进阶：注入 FactoryCalendar 跳过非工作时间（目前采用 7x24 简单 plus）
         if (startTime != null) {
             endTime = startTime.plusMinutes((long) (productionDurationHours * 60));
         } else {
@@ -150,18 +155,16 @@ public class MotherRollOrder {
     }
 
     /**
-     * 简化换型时间计算（后续将被 ChangeoverService 替代）
+     * 降级时的简化计算
      */
     private int calcSimpleChangeover(MotherRollOrder prev) {
         if (prev == null) return 0;
-        // 同配方同型号同厚度 → 0 分钟
         if (prev.getFormulaCode().equals(this.formulaCode)
                 && prev.getProductCode().equals(this.productCode)
                 && prev.getThickness() == this.thickness) {
-            return 0;
+            return 0; // 同配方同型号同厚度
         }
-        // 不同产品 → 暂定 30 分钟
-        return 30;
+        return 30; // 默认 30 分钟
     }
 
     // ==================== 业务方法 ====================
