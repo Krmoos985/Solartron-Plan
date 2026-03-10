@@ -30,9 +30,15 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                 highInventoryShouldNotBeAdvanced(factory),// MC2 库存>30天不前移
 
                 // ===== 软约束 =====
-                // TODO Phase 3: SC1-SC5
+                minimizeChangeoverTime(factory),          // SC1 换型时间最小化
+                prioritizeByInventorySupplyDays(factory), // SC2 库存天数优先级
+                respectExpectedStartTime(factory),        // SC3 期望时间偏差
+                preferredLineMatch(factory),              // SC4特定产线偏好
+                continuousProduction(factory)             // SC5 连续生产
         };
     }
+
+    // （保留原有的 HC1-HC5, MC1-MC2 方法，此处由于篇幅仅用新方法覆盖需要替换的部分，所以不能替换掉完整的 defineConstraints 下方所有代码。这要求我分两次或者精确定位。）
 
     // ===== HC2：库存<10天强制优先 =====
 
@@ -214,5 +220,101 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                     return (int) java.time.temporal.ChronoUnit.MINUTES.between(overlapStart, overlapEnd);
                 })
                 .asConstraint("HC3-停机冲突");
+    }
+
+    // ===== SC1：换型时间最小化 =====
+
+    /**
+     * SC1：每次换型时，惩罚等同于换型分钟数。
+     * （通过降维简化：直接读取 MotherRollOrder 影子变量上的 changeoverMinutes）
+     */
+    Constraint minimizeChangeoverTime(ConstraintFactory factory) {
+        return factory.forEach(MotherRollOrder.class)
+                .filter(order -> order.getPreviousOrder() != null && order.getChangeoverMinutes() != null && order.getChangeoverMinutes() > 0)
+                .penalize(HardMediumSoftScore.ONE_SOFT, MotherRollOrder::getChangeoverMinutes)
+                .asConstraint("SC1-换型最小化");
+    }
+
+    // ===== SC2：库存天数优先级 =====
+
+    /**
+     * SC2：同型号优先排库存天数低的，倒置将惩罚天数差值。
+     */
+    Constraint prioritizeByInventorySupplyDays(ConstraintFactory factory) {
+        return factory.forEachUniquePair(MotherRollOrder.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(order -> 
+                                order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
+                .filter((o1, o2) -> {
+                    if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
+                    if (o1.getSequenceIndex() < o2.getSequenceIndex()) {
+                        return o1.getInventorySupplyDays() > o2.getInventorySupplyDays();
+                    } else if (o2.getSequenceIndex() < o1.getSequenceIndex()) {
+                        return o2.getInventorySupplyDays() > o1.getInventorySupplyDays();
+                    }
+                    return false;
+                })
+                .penalize(HardMediumSoftScore.ofSoft(2), (o1, o2) -> {
+                    double diff = Math.abs(o1.getInventorySupplyDays() - o2.getInventorySupplyDays());
+                    return (int) diff;
+                })
+                .asConstraint("SC2-库存天数优先级");
+    }
+
+    // ===== SC3：期望生产时间偏差 =====
+
+    /**
+     * SC3：实际生产时间不要晚于期望时间，按晚的小时数惩罚。
+     */
+    Constraint respectExpectedStartTime(ConstraintFactory factory) {
+        return factory.forEach(MotherRollOrder.class)
+                .filter(order -> order.getStartTime() != null && order.getExpectedStartTime() != null
+                        && order.getStartTime().isAfter(order.getExpectedStartTime())) // 晚于期望时间
+                .penalize(HardMediumSoftScore.ONE_SOFT, order -> 
+                        (int) java.time.temporal.ChronoUnit.HOURS.between(order.getExpectedStartTime(), order.getStartTime()))
+                .asConstraint("SC3-期望时间偏差");
+    }
+
+    // ===== SC4：特定产线偏好 =====
+    
+    /**
+     * SC4：特定型号如果有偏好的产线代码（preferredLineCode），不在该线则惩罚。
+     */
+    Constraint preferredLineMatch(ConstraintFactory factory) {
+        return factory.forEach(MotherRollOrder.class)
+                .filter(order -> order.getAssignedLine() != null 
+                        && order.getPreferredLineCode() != null 
+                        && !order.getAssignedLine().getLineCode().equals(order.getPreferredLineCode()))
+                .penalize(HardMediumSoftScore.ONE_SOFT)
+                .asConstraint("SC4-特定产线偏好");
+    }
+
+    // ===== SC5：拆分子任务连续生产 =====
+
+    /**
+     * SC5：从同一个订单拆分出的不同 dayIndex 子任务，尽力做到连续。
+     * 同一条产线上被插队惩罚 10，跨产线生产惩罚 1000。
+     */
+    Constraint continuousProduction(ConstraintFactory factory) {
+        return factory.forEachUniquePair(MotherRollOrder.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(MotherRollOrder::getParentTaskId))
+                .filter((o1, o2) -> {
+                    // 只检查逻辑上应该是相邻的两天任务，比如 day 1 和 day 2。避免多重惩罚。
+                    if (o1.getParentTaskId() == null || Math.abs(o1.getDayIndex() - o2.getDayIndex()) != 1) return false;
+                    if (o1.getAssignedLine() == null || o2.getAssignedLine() == null) return false;
+                    
+                    // 如果不在同一条线，直接违规
+                    if (!o1.getAssignedLine().getId().equals(o2.getAssignedLine().getId())) return true;
+                    
+                    // 如果在同一条线，但 sequenceIndex 不连续，也即被人插队了，也违规
+                    if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
+                    return Math.abs(o1.getSequenceIndex() - o2.getSequenceIndex()) > 1;
+                })
+                .penalize(HardMediumSoftScore.ONE_SOFT, (o1, o2) -> {
+                    if (!o1.getAssignedLine().getId().equals(o2.getAssignedLine().getId())) {
+                        return 1000; // 跨产线
+                    }
+                    return 10; // 同线插队
+                })
+                .asConstraint("SC5-拆分子任务连续生产");
     }
 }

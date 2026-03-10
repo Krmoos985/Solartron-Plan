@@ -219,4 +219,123 @@ class MotherRollConstraintProviderTest {
                 .given(line, order)
                 .penalizesBy(10);
     }
+
+    @Test
+    void sc1MinimizeChangeoverTime() {
+        ProductionLine line = new ProductionLine("L1", "一线", "L1", null);
+        MotherRollOrder o1 = new MotherRollOrder(); o1.setId("o1"); o1.setAssignedLine(line);
+        MotherRollOrder o2 = new MotherRollOrder(); o2.setId("o2"); o2.setAssignedLine(line);
+        o2.setPreviousOrder(o1);
+
+        // Scenario 1: No changeover time
+        o2.setChangeoverMinutes(0);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::minimizeChangeoverTime)
+                .given(line, o1, o2)
+                .penalizesBy(0);
+
+        // Scenario 2: Changeover time = 45 mins
+        o2.setChangeoverMinutes(45);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::minimizeChangeoverTime)
+                .given(line, o1, o2)
+                .penalizesBy(45);
+    }
+
+    @Test
+    void sc2PrioritizeByInventorySupplyDays() {
+        ProductionLine line = new ProductionLine("L1", "一线", "L1", null);
+
+        MotherRollOrder o1 = new MotherRollOrder(); o1.setId("o1"); o1.setAssignedLine(line);
+        // Supply = 30 days
+        o1.setMonthlyShipment(30); o1.setCurrentInventory(30);
+
+        MotherRollOrder o2 = new MotherRollOrder(); o2.setId("o2"); o2.setAssignedLine(line);
+        // Supply = 15 days
+        o2.setMonthlyShipment(30); o2.setCurrentInventory(15);
+
+        // Valid: o2 (15) comes before o1 (30).
+        o2.setSequenceIndex(0); o1.setSequenceIndex(1);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::prioritizeByInventorySupplyDays)
+                .given(line, o1, o2)
+                .penalizesBy(0);
+
+        // Invalid: o1 (30) comes before o2 (15). Penalty is diff (15). BUT penalty weight is 2.
+        o1.setSequenceIndex(0); o2.setSequenceIndex(1);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::prioritizeByInventorySupplyDays)
+                .given(line, o1, o2)
+                .penalizesBy(15); // penalizesBy count is multiplied by weight internally in Verifier usually, wait, NO!
+        // verifyThat penalizesBy counts the *match weight* directly! So it should be the match weight (15).
+    }
+
+    @Test
+    void sc3RespectExpectedStartTime() {
+        ProductionLine line = new ProductionLine("L1", "一线", "L1", null);
+
+        MotherRollOrder order = new MotherRollOrder();
+        order.setId("O1"); order.setAssignedLine(line);
+        LocalDateTime expectedTime = LocalDateTime.of(2026, 3, 15, 12, 0);
+        order.setExpectedStartTime(expectedTime);
+
+        // Valid: started on time or earlier
+        order.setStartTime(expectedTime.minusHours(5));
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::respectExpectedStartTime)
+                .given(line, order)
+                .penalizesBy(0);
+
+        // Invalid: started 10 hours late
+        order.setStartTime(expectedTime.plusHours(10));
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::respectExpectedStartTime)
+                .given(line, order)
+                .penalizesBy(10);
+    }
+
+    @Test
+    void sc4PreferredLineMatch() {
+        ProductionLine line2 = new ProductionLine("L2", "二线", "LINE_2", null);
+        ProductionLine line4 = new ProductionLine("L4", "四线", "LINE_4", null);
+
+        MotherRollOrder order = new MotherRollOrder();
+        order.setId("O1"); order.setPreferredLineCode("LINE_2");
+
+        // Valid
+        order.setAssignedLine(line2);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::preferredLineMatch)
+                .given(line2, line4, order)
+                .penalizesBy(0);
+
+        // Invalid
+        order.setAssignedLine(line4);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::preferredLineMatch)
+                .given(line2, line4, order)
+                .penalizesBy(1);
+    }
+
+    @Test
+    void sc5ContinuousProduction() {
+        ProductionLine line1 = new ProductionLine("L1", "一线", "L1", null);
+        ProductionLine line2 = new ProductionLine("L2", "二线", "L2", null);
+
+        MotherRollOrder o1 = new MotherRollOrder(); o1.setId("o1"); o1.setParentTaskId("Parent"); o1.setDayIndex(1);
+        MotherRollOrder o2 = new MotherRollOrder(); o2.setId("o2"); o2.setParentTaskId("Parent"); o2.setDayIndex(2);
+
+        // Scenario 1: Cross line (+1000)
+        o1.setAssignedLine(line1); o1.setSequenceIndex(0);
+        o2.setAssignedLine(line2); o2.setSequenceIndex(0);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::continuousProduction)
+                .given(line1, line2, o1, o2)
+                .penalizesBy(1000);
+
+        // Scenario 2: Same line, but non-adjacent (+10)
+        o1.setAssignedLine(line1); o1.setSequenceIndex(0);
+        o2.setAssignedLine(line1); o2.setSequenceIndex(2); // difference > 1
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::continuousProduction)
+                .given(line1, line2, o1, o2)
+                .penalizesBy(10);
+
+        // Scenario 3: Same line, adjacent (0)
+        o1.setAssignedLine(line1); o1.setSequenceIndex(1);
+        o2.setAssignedLine(line1); o2.setSequenceIndex(2); // difference == 1
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::continuousProduction)
+                .given(line1, line2, o1, o2)
+                .penalizesBy(0);
+    }
 }
