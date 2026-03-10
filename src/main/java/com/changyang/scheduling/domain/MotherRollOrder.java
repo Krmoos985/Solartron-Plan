@@ -10,6 +10,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import ai.timefold.solver.core.api.domain.lookup.PlanningId;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
@@ -31,6 +32,7 @@ public class MotherRollOrder {
     // ==================== 问题数据（Problem Facts） ====================
 
     /** 订单ID */
+    @PlanningId
     private String id;
 
     /** 物料编码 */

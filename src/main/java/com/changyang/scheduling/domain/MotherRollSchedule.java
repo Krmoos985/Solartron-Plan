@@ -50,11 +50,29 @@ public class MotherRollSchedule {
     @PlanningScore
     private HardMediumSoftScore score;
 
+    // ==================== 问题事实 (Problem Facts) ====================
+
+    @ai.timefold.solver.core.api.domain.solution.ProblemFactCollectionProperty
+    private List<com.changyang.scheduling.domain.ExceptionTime> exceptionTimes;
+
+    @ai.timefold.solver.core.api.domain.solution.ProblemFactCollectionProperty
+    private List<com.changyang.scheduling.domain.FilterChangePlan> filterChangePlans;
+
+    @ai.timefold.solver.core.api.domain.solution.ProblemFactCollectionProperty
+    private java.util.List<com.changyang.scheduling.domain.ChangeoverEntry> changeoverEntries;
+
+    @ai.timefold.solver.core.api.domain.solution.ProblemFactProperty
+    private com.changyang.scheduling.domain.FactoryCalendar factoryCalendar;
+
     /**
-     * 便捷构造
+     * 基础便捷构造
      */
     public MotherRollSchedule(List<ProductionLine> productionLines, List<MotherRollOrder> orders) {
         this.productionLines = productionLines;
         this.orders = orders;
+        this.exceptionTimes = new java.util.ArrayList<>();
+        this.filterChangePlans = new java.util.ArrayList<>();
+        this.changeoverEntries = new java.util.ArrayList<>();
+        this.factoryCalendar = new com.changyang.scheduling.domain.FactoryCalendar();
     }
 }

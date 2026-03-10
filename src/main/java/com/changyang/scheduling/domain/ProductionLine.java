@@ -7,6 +7,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import ai.timefold.solver.core.api.domain.lookup.PlanningId;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +27,7 @@ import java.util.List;
 public class ProductionLine {
 
     /** 产线 ID，如 "LINE_1", "LINE_2" */
+    @PlanningId
     private String id;
 
     /** 产线名称，如 "一线", "二线" */
