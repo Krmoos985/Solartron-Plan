@@ -20,8 +20,10 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
         return new Constraint[]{
                 // ===== 硬约束 =====
                 productLineMustBeCompatible(factory),     // HC1 产品-产线兼容
-                subTaskMustMaintainOrder(factory),        // HC5 同一母任务的子任务保序
+                urgentInventoryMustBePrioritized(factory),// HC2 库存<10天强制优先
                 noOverlapWithExceptionTime(factory),      // HC3 停机时段不可重叠
+                thicknessMonotonicity(factory),           // HC4 厚度轮转约束（单调递增或递减）
+                subTaskMustMaintainOrder(factory),        // HC5 同一母任务的子任务保序
 
                 // ===== 中等约束 =====
                 // TODO Phase 3: MC1, MC2
@@ -29,6 +31,59 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                 // ===== 软约束 =====
                 // TODO Phase 3: SC1-SC5
         };
+    }
+
+    // ===== HC2：库存<10天强制优先 =====
+
+    /**
+     * HC2：如果一个订单库存可维持天数 < 10 天，它必须排在那些 >= 10 天的订单前面。
+     * 检测方式：同产线上，排在前面的不紧急，排在后面的紧急，即为倒置违规。
+     */
+    Constraint urgentInventoryMustBePrioritized(ConstraintFactory factory) {
+        return factory.forEachUniquePair(MotherRollOrder.class,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(order -> 
+                                order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
+                .filter((o1, o2) -> {
+                    if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
+
+                    boolean o1Urgent = o1.getInventorySupplyDays() < 10.0;
+                    boolean o2Urgent = o2.getInventorySupplyDays() < 10.0;
+                    
+                    if (o1Urgent == o2Urgent) return false;
+
+                    if (o1.getSequenceIndex() < o2.getSequenceIndex()) {
+                        return !o1Urgent && o2Urgent; // o1 先，且 o1 不紧急、o2 紧急
+                    } else if (o2.getSequenceIndex() < o1.getSequenceIndex()) {
+                        return !o2Urgent && o1Urgent; // o2 先，且 o2 不紧急、o1 紧急
+                    }
+                    return false;
+                })
+                .penalize(HardMediumSoftScore.ONE_HARD)
+                .asConstraint("HC2-紧急库存优先");
+    }
+
+    // ===== HC4：厚度轮转约束 =====
+
+    /**
+     * HC4：同一产线内的厚度变化必须严格单调（一直增加或一直减少，允许平级）。
+     * 巧妙解法：分别提取出所有向上的厚度台阶（UP）与向下的厚度台阶（DOWN）。
+     * 如果在同一产线上同时存在 UP 台阶和 DOWN 台阶，说明单调性被打破（出现了 V 形或 ^ 形折返）。
+     * UP 数量与 DOWN 数量的笛卡尔积即为惩罚数，提供了完美的演化梯度。
+     */
+    Constraint thicknessMonotonicity(ConstraintFactory factory) {
+        var upSteps = factory.forEach(MotherRollOrder.class)
+                .filter(order -> order.getPreviousOrder() != null 
+                        && order.getPreviousOrder().getThickness() < order.getThickness());
+
+        var downSteps = factory.forEach(MotherRollOrder.class)
+                .filter(order -> order.getPreviousOrder() != null 
+                        && order.getPreviousOrder().getThickness() > order.getThickness());
+
+        return upSteps.join(downSteps,
+                        ai.timefold.solver.core.api.score.stream.Joiners.equal(order -> 
+                                order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
+                .penalize(HardMediumSoftScore.ONE_HARD)
+                .asConstraint("HC4-厚度单调流向");
     }
 
     // ===== HC1：产品-产线兼容性 =====

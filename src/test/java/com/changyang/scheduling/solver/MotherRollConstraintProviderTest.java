@@ -108,4 +108,58 @@ class MotherRollConstraintProviderTest {
                 .given(line, exception, orderOverlap)
                 .penalizesBy(60);
     }
+
+    @Test
+    void hc2UrgentInventoryMustBePrioritized() {
+        ProductionLine line = new ProductionLine("L1", "一线", "L1", null);
+
+        MotherRollOrder urgent = new MotherRollOrder();
+        urgent.setId("Urgent"); urgent.setMonthlyShipment(30); urgent.setCurrentInventory(5); // (5/30)*30 = 5 days < 10
+        urgent.setAssignedLine(line);
+
+        MotherRollOrder normal = new MotherRollOrder();
+        normal.setId("Normal"); normal.setMonthlyShipment(30); normal.setCurrentInventory(15); // (15/30)*30 = 15 days >= 10
+        normal.setAssignedLine(line);
+
+        // Valid: Urgent is before normal
+        urgent.setSequenceIndex(0); normal.setSequenceIndex(1);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::urgentInventoryMustBePrioritized)
+                .given(line, urgent, normal)
+                .penalizesBy(0);
+
+        // Invalid: Normal is before urgent
+        normal.setSequenceIndex(0); urgent.setSequenceIndex(1);
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::urgentInventoryMustBePrioritized)
+                .given(line, urgent, normal)
+                .penalizesBy(1);
+    }
+
+    @Test
+    void hc4ThicknessMonotonicity() {
+        ProductionLine line = new ProductionLine("L1", "一线", "L1", null);
+
+        // Sequence: 50 -> 75 -> 50 (V-shape, UP then DOWN)
+        MotherRollOrder o1 = new MotherRollOrder(); o1.setId("o1"); o1.setThickness(50);
+        o1.setAssignedLine(line);
+
+        MotherRollOrder o2 = new MotherRollOrder(); o2.setId("o2"); o2.setThickness(75);
+        o2.setPreviousOrder(o1); o2.setAssignedLine(line);
+
+        MotherRollOrder o3 = new MotherRollOrder(); o3.setId("o3"); o3.setThickness(50);
+        o3.setPreviousOrder(o2); o3.setAssignedLine(line);
+
+        // 1 UP step (50->75), 1 DOWN step (75->50) => 1x1 = 1 penalty
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::thicknessMonotonicity)
+                .given(line, o1, o2, o3)
+                .penalizesBy(1);
+
+        // Sequence: 50 -> 75 -> 100 (Monotonic UP)
+        MotherRollOrder o4 = new MotherRollOrder(); o4.setId("o4"); o4.setThickness(100);
+        o4.setPreviousOrder(o2); o4.setAssignedLine(line);
+
+        // 2 UP steps (50->75, 75->100), 0 DOWN steps => 2x0 = 0 penalty
+        constraintVerifier.verifyThat(MotherRollConstraintProvider::thicknessMonotonicity)
+                .given(line, o1, o2, o4)
+                .penalizesBy(0);
+    }
 }
