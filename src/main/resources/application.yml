@@ -1,0 +1,19 @@
+# 应用配置
+spring:
+  application:
+    name: changyang-scheduling
+
+server:
+  port: 8080
+
+# Timefold Solver 配置
+timefold:
+  solver:
+    termination:
+      spent-limit: 5m
+
+# 日志
+logging:
+  level:
+    ai.timefold.solver: INFO
+    com.changyang.scheduling: DEBUG

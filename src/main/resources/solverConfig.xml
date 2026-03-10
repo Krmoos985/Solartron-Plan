@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<solver>
+    <solutionClass>com.changyang.scheduling.domain.MotherRollSchedule</solutionClass>
+    <entityClass>com.changyang.scheduling.domain.ProductionLine</entityClass>
+    <entityClass>com.changyang.scheduling.domain.MotherRollOrder</entityClass>
+
+    <scoreDirectorFactory>
+        <constraintProviderClass>
+            com.changyang.scheduling.solver.MotherRollConstraintProvider
+        </constraintProviderClass>
+    </scoreDirectorFactory>
+
+    <termination>
+        <minutesSpentLimit>5</minutesSpentLimit>
+    </termination>
+
+    <constructionHeuristic>
+        <constructionHeuristicType>FIRST_FIT_DECREASING</constructionHeuristicType>
+    </constructionHeuristic>
+
+    <localSearch>
+        <localSearchType>LATE_ACCEPTANCE</localSearchType>
+    </localSearch>
+</solver>
