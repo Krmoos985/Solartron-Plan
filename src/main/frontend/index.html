@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Solartron APS | 次世代母卷排程中枢</title>
+    <!-- 引入 Outfit 等宽/非等宽科幻几何字体组合 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <!-- 噪点背景层 -->
+    <div class="noise-overlay"></div>
+    
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="logo">✦</span>
+          <h1>SOLARTRON<span class="accent">_APS</span></h1>
+        </div>
+        <div class="status-indicator">
+          <div class="dot"></div>
+          <span id="system-status">系统就绪 / SYSTEM READY</span>
+        </div>
+      </header>
+      
+      <main class="dashboard">
+        <section class="control-panel glass-panel">
+          <h2>排程控制器 / DISPATCH_CORE</h2>
+          <div class="actions">
+            <button id="btn-sync" class="btn primary">
+              <span class="btn-text">单步推演 / SYNC_COMPUTE</span>
+              <span class="btn-scanline"></span>
+            </button>
+            <button id="btn-async" class="btn secondary">
+              <span class="btn-text">下发排程 / ASYNC_DISPATCH</span>
+            </button>
+          </div>
+          
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <div class="metric-label">CURRENT SCORE</div>
+              <div class="metric-value" id="val-score">AWAITING / 待命中</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">JOB ID</div>
+              <div class="metric-value" id="val-jobid">N/A</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="schedule-view glass-panel">
+          <h2>生产线拓扑 / LINE_TOPOLOGY</h2>
+          <div id="line-container" class="gantt-container">
+            <!--动态生成的产线及任务块-->
+            <div class="empty-state">等待接入调度引流...</div>
+          </div>
+        </section>
+      </main>
+    </div>
+    
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
