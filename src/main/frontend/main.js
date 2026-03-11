@@ -135,7 +135,7 @@ const renderTasks = (lineTasks) => {
         block.innerHTML = `
           <div class="task-id">${t.originalTaskId}</div>
           <div class="task-time">${sTime} — ${eTime}</div>
-          <div class="task-id" style="color:var(--accent-cyan);">天数占比: ${t.daysCovered}D / ${t.totalDays}D</div>
+          <div class="task-days">占用时长: ${t.daysCovered}D / ${t.totalDays}D</div>
         `;
         track.appendChild(block);
       });

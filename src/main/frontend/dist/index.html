@@ -4,22 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solartron APS | 次世代母卷排程中枢</title>
-    <!-- 引入 Outfit 等宽/非等宽科幻几何字体组合 -->
+    <!-- 引入高品质无衬线字体及等宽字体 -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-    <script type="module" crossorigin src="/assets/index-DL93NNBb.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-Dz_PzDEN.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script type="module" crossorigin src="/assets/index-43DNwHn1.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-6Zu7FJcX.css">
   </head>
   <body>
-    <!-- 噪点背景层 -->
-    <div class="noise-overlay"></div>
     
     <div id="app">
       <header class="topbar">
         <div class="brand">
           <span class="logo">✦</span>
-          <h1>SOLARTRON<span class="accent">_APS</span></h1>
+          <h1>Solartron<span class="accent">APS</span></h1>
         </div>
         <div class="status-indicator">
           <div class="dot"></div>
@@ -28,32 +26,31 @@
       </header>
       
       <main class="dashboard">
-        <section class="control-panel glass-panel">
-          <h2>排程控制器 / DISPATCH_CORE</h2>
+        <section class="control-panel">
+          <h2>排程控制器 <span class="sub-label">Dispatch Core</span></h2>
           <div class="actions">
             <button id="btn-sync" class="btn primary">
-              <span class="btn-text">单步推演 / SYNC_COMPUTE</span>
-              <span class="btn-scanline"></span>
+              <span class="btn-text">单步推演 Compute</span>
             </button>
             <button id="btn-async" class="btn secondary">
-              <span class="btn-text">下发排程 / ASYNC_DISPATCH</span>
+              <span class="btn-text">下发异步排程 Dispatch</span>
             </button>
           </div>
           
           <div class="metrics-grid">
             <div class="metric-card">
-              <div class="metric-label">CURRENT SCORE</div>
-              <div class="metric-value" id="val-score">AWAITING / 待命中</div>
+              <div class="metric-label">CURRENT SCORE / 当前得分</div>
+              <div class="metric-value" id="val-score">AWAITING</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">JOB ID</div>
-              <div class="metric-value" id="val-jobid">N/A</div>
+              <div class="metric-label">JOB ID / 任务标识</div>
+              <div class="metric-value" id="val-jobid">—</div>
             </div>
           </div>
         </section>
 
-        <section class="schedule-view glass-panel">
-          <h2>生产线拓扑 / LINE_TOPOLOGY</h2>
+        <section class="schedule-view">
+          <h2>生产线拓扑 <span class="sub-label">Line Topology</span></h2>
           <div id="line-container" class="gantt-container">
             <!--动态生成的产线及任务块-->
             <div class="empty-state">等待接入调度引流...</div>
