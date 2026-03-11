@@ -12,61 +12,10 @@ let activeJobId = null;
 let pollInterval = null;
 
 // Mock problem data for DEMO API call
-const getMockProblem = () => {
-  return {
-    "orders": [
-      {
-        "id": "ORD-1",
-        "materialCode": "M1",
-        "productCode": "T19EST",
-        "formulaCode": "F1",
-        "thickness": 50,
-        "quantity": 1000,
-        "productionDurationHours": 48,
-        "currentInventory": 100,
-        "monthlyShipment": 300,
-        "compatibleLines": ["L1", "L2"]
-      },
-      {
-        "id": "ORD-2",
-        "materialCode": "M2",
-        "productCode": "T7FDX",
-        "formulaCode": "F1",
-        "thickness": 75,
-        "quantity": 500,
-        "productionDurationHours": 24,
-        "currentInventory": 10,
-        "monthlyShipment": 150,
-        "compatibleLines": ["L1"]
-      },
-      {
-        "id": "ORD-3",
-        "materialCode": "M3",
-        "productCode": "T10ESY",
-        "formulaCode": "F2",
-        "thickness": 50,
-        "quantity": 800,
-        "productionDurationHours": 36,
-        "currentInventory": 50,
-        "monthlyShipment": 200,
-        "compatibleLines": ["L1", "L2"]
-      }
-    ],
-    "productionLines": [
-      {
-        "id": "L1",
-        "name": "一线",
-        "lineCode": "L1",
-        "availableFrom": "2026-03-11T08:00:00"
-      },
-      {
-        "id": "L2",
-        "name": "二线",
-        "lineCode": "L2",
-        "availableFrom": "2026-03-11T08:00:00"
-      }
-    ]
-  };
+const getMockProblem = async () => {
+  const res = await fetch(`${BASE_URL}/demo`);
+  if (!res.ok) throw new Error("未能获取演示数据");
+  return await res.json();
 };
 
 const setStatus = (status, jobId = 'N/A') => {
@@ -172,10 +121,11 @@ const pollStatus = async () => {
 
 btnAsync.addEventListener('click', async () => {
   try {
+    const problem = await getMockProblem();
     const res = await fetch(`${BASE_URL}/solve-async`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(getMockProblem())
+      body: JSON.stringify(problem)
     });
     const data = await res.json();
     activeJobId = data.jobId;
@@ -195,10 +145,11 @@ btnSync.addEventListener('click', async () => {
   valScore.innerText = '同步阻塞中...';
   lineContainer.innerHTML = '<div class="empty-state">等待后端同步响应... / AWAITING...</div>';
   try {
+    const problem = await getMockProblem();
     const res = await fetch(`${BASE_URL}/solve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(getMockProblem())
+      body: JSON.stringify(problem)
     });
     const data = await res.json();
     

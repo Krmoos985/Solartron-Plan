@@ -91,4 +91,11 @@ public class SchedulingController {
         
         return responseMap;
     }
+
+    private final com.changyang.scheduling.service.DemoDataGenerator demoDataGenerator;
+
+    @GetMapping("/demo")
+    public ResponseEntity<MotherRollSchedule> getDemoData() {
+        return ResponseEntity.ok(demoDataGenerator.generateDemoData());
+    }
 }
