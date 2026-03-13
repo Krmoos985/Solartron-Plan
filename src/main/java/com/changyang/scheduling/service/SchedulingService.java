@@ -22,14 +22,20 @@ public class SchedulingService {
 
     private final SolverManager<MotherRollSchedule, String> solverManager;
     private final TaskSplitter taskSplitter;
+    private final ChangeoverService changeoverService;
 
     private final ConcurrentMap<String, MotherRollSchedule> jobResults = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Throwable> jobErrors = new ConcurrentHashMap<>();
 
     /**
-     * 预处理
+     * 预处理：拆分任务 + 初始化换型缓存
      */
     private MotherRollSchedule preprocess(MotherRollSchedule problem) {
+        // 初始化换型缓存（如果 ExcelDataLoader 已经初始化过，这里会刷新）
+        if (problem.getChangeoverEntries() != null && !problem.getChangeoverEntries().isEmpty()) {
+            changeoverService.initCache(problem.getChangeoverEntries());
+        }
+
         if (problem.getOrders() != null) {
             List<MotherRollOrder> splitOrders = taskSplitter.splitTasks(problem.getOrders());
             problem.setOrders(splitOrders);
