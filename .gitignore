@@ -39,6 +39,11 @@ nb-configuration.xml
 # Local environment
 .env
 
+# Frontend generated artifacts
+/frontend/
+/src/main/frontend/node_modules/
+/src/main/frontend/dist/
+
 # Plugin directory
 /.quarkus/cli/plugins/
 # TLS Certificates
