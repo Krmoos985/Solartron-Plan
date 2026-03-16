@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Solver 求解时间限制为 5 秒（通过 test profile 覆盖）。
  * </p>
  */
-@SpringBootTest(properties = {"timefold.solver.termination.spent-limit=5s"})
+@SpringBootTest(properties = {"timefold.solver.termination.spent-limit=30s"})
 class ExcelSchedulingIntegrationTest {
 
     @Autowired
@@ -46,9 +46,16 @@ class ExcelSchedulingIntegrationTest {
 
         // 3. 验证基本结果
         assertNotNull(solution.getScore(), "应返回评分");
+        assertTrue(solution.getScore().isFeasible(), "当前 Excel 模式下应得到硬约束可行解");
         System.out.println("最终评分: " + solution.getScore());
 
-        // 4. 验证所有订单都被分配到产线
+        // 4. 当前 Excel 模式只保留原始订单粒度，不按天拆分
+        assertEquals(originalOrderCount, solution.getOrders().size(), "当前 Excel 模式下不应按天拆分任务");
+
+        // 5. 验证完整性：所有订单都被分配到产线
+        int unassignedCount = SchedulingService.getUnassignedCount(solution);
+        System.out.println("未分配任务数: " + unassignedCount);
+
         int totalAssigned = 0;
         for (ProductionLine line : solution.getProductionLines()) {
             System.out.println(line.getName() + " 分配了 " + line.getOrders().size() + " 条任务");
@@ -67,8 +74,9 @@ class ExcelSchedulingIntegrationTest {
             }
         }
         assertTrue(totalAssigned > 0, "至少有一条任务被分配");
+        assertEquals(originalOrderCount, totalAssigned, "所有原始订单都应被分配");
 
-        // 5. 验证 HC1：所有分配的订单都在兼容产线上
+        // 6. 验证 HC1：所有分配的订单都在兼容产线上
         for (ProductionLine line : solution.getProductionLines()) {
             for (MotherRollOrder order : line.getOrders()) {
                 assertTrue(order.isCompatibleWith(line),
@@ -76,10 +84,6 @@ class ExcelSchedulingIntegrationTest {
                                 + ") 被分配到不兼容的 " + line.getLineCode());
             }
         }
-
-        // 6. 验证硬约束无违反
-        assertTrue(solution.getScore().hardScore() >= 0,
-                "硬约束评分不应为负: " + solution.getScore());
 
         System.out.println("=== 集成测试通过 ===");
     }

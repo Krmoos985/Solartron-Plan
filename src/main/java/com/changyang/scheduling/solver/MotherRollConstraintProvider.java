@@ -2,15 +2,21 @@ package com.changyang.scheduling.solver;
 
 import ai.timefold.solver.core.api.score.buildin.hardmediumsoft.HardMediumSoftScore;
 import ai.timefold.solver.core.api.score.stream.Constraint;
+import ai.timefold.solver.core.api.score.stream.ConstraintCollectors;
 import ai.timefold.solver.core.api.score.stream.ConstraintFactory;
 import ai.timefold.solver.core.api.score.stream.ConstraintProvider;
+import ai.timefold.solver.core.api.score.stream.Joiners;
+import com.changyang.scheduling.domain.ExceptionTime;
+import com.changyang.scheduling.domain.FilterChangePlan;
 import com.changyang.scheduling.domain.MotherRollOrder;
+
+import java.time.temporal.ChronoUnit;
+import java.util.Map;
 
 /**
  * 母卷排程约束提供者
  * <p>
  * 定义所有硬约束（HC1-HC5）、中等约束（MC1-MC2）和软约束（SC1-SC5）。
- * Phase 3 将逐一实现每个约束方法。
  * </p>
  */
 public class MotherRollConstraintProvider implements ConstraintProvider {
@@ -18,40 +24,52 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
     @Override
     public Constraint[] defineConstraints(ConstraintFactory factory) {
         return new Constraint[]{
-                // ===== 硬约束 =====
-                productLineMustBeCompatible(factory),     // HC1 产品-产线兼容
-                urgentInventoryMustBePrioritized(factory),// HC2 库存<10天强制优先
-                noOverlapWithExceptionTime(factory),      // HC3 停机时段不可重叠
-                thicknessMonotonicity(factory),           // HC4 厚度轮转约束（单调递增或递减）
-                subTaskMustMaintainOrder(factory),        // HC5 同一母任务的子任务保序
-
-                // ===== 中等约束 =====
-                filterChangePreferredOrder(factory),      // MC1 过滤器后20天优先顺序
-                highInventoryShouldNotBeAdvanced(factory),// MC2 库存>30天不前移
-
-                // ===== 软约束 =====
-                minimizeChangeoverTime(factory),          // SC1 换型时间最小化
-                prioritizeByInventorySupplyDays(factory), // SC2 库存天数优先级
-                respectExpectedStartTime(factory),        // SC3 期望时间偏差
-                preferredLineMatch(factory),              // SC4特定产线偏好
-                continuousProduction(factory)             // SC5 连续生产
+                /*
+                 * 当前 Excel 版本只稳定提供：
+                 * 1. 产品/产线兼容关系
+                 * 2. 配方、型号、厚度、时长这些与换型直接相关的数据
+                 *
+                 * 先只启用“可分配到哪条线”与“换型时间最小化”两类约束，
+                 * 暂不启用库存、过滤器、停机、厚度波峰、按天拆分连续性等
+                 * 依赖额外业务数据或更细时间建模的规则。
+                 */
+                productLineMustBeCompatible(factory),
+                minimizeChangeoverTime(factory)
         };
     }
 
-    // （保留原有的 HC1-HC5, MC1-MC2 方法，此处由于篇幅仅用新方法覆盖需要替换的部分，所以不能替换掉完整的 defineConstraints 下方所有代码。这要求我分两次或者精确定位。）
-
-    // ===== HC2：库存<10天强制优先 =====
+    // ===== HC1：产品-产线兼容性 =====
 
     /**
-     * HC2：如果一个订单库存可维持天数 < 10 天，它必须排在那些 >= 10 天的订单前面。
-     * 检测方式：同产线上，排在前面的不紧急，排在后面的紧急，即为倒置违规。
+     * HC1：订单必须分配到兼容产线上。
+     * 如果订单的 compatibleLines 不包含所分配产线的 lineCode，则违反硬约束。
+     */
+    Constraint productLineMustBeCompatible(ConstraintFactory factory) {
+        return factory.forEach(MotherRollOrder.class)
+                .filter(order -> order.getAssignedLine() != null
+                        && !order.isCompatibleWith(order.getAssignedLine()))
+                .penalize(HardMediumSoftScore.ONE_HARD)
+                .asConstraint("HC1-产品产线兼容");
+    }
+
+    // ===== HC2：库存<10天强制优先（只看第一天子任务） =====
+
+    /**
+     * HC2：如果一个订单库存可维持天数 < 10 天，该任务的第一天子任务必须排在
+     * 非紧急任务（首日子任务）前面。后续天数的子任务不需要强制最前。
+     *
+     * 修正点（Codex Review P3）：增加 isFirstDayTask() 过滤，
+     * 只有 dayIndex=1 或未拆分的任务才参与紧急度比较。
      */
     Constraint urgentInventoryMustBePrioritized(ConstraintFactory factory) {
         return factory.forEachUniquePair(MotherRollOrder.class,
-                        ai.timefold.solver.core.api.score.stream.Joiners.equal(order -> 
+                        Joiners.equal(order ->
                                 order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
                 .filter((o1, o2) -> {
                     if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
+
+                    // 只看首日子任务（dayIndex=1 或未拆分的任务）
+                    if (!o1.isFirstDayTask() || !o2.isFirstDayTask()) return false;
 
                     boolean o1Urgent = o1.getInventorySupplyDays() < 10.0;
                     boolean o2Urgent = o2.getInventorySupplyDays() < 10.0;
@@ -69,135 +87,6 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                 .asConstraint("HC2-紧急库存优先");
     }
 
-    // ===== HC4：厚度轮转约束 =====
-
-    /**
-     * HC4：同一产线内的厚度变化必须严格单调（一直增加或一直减少，允许平级）。
-     * 巧妙解法：分别提取出所有向上的厚度台阶（UP）与向下的厚度台阶（DOWN）。
-     * 如果在同一产线上同时存在 UP 台阶和 DOWN 台阶，说明单调性被打破（出现了 V 形或 ^ 形折返）。
-     * UP 数量与 DOWN 数量的笛卡尔积即为惩罚数，提供了完美的演化梯度。
-     */
-    Constraint thicknessMonotonicity(ConstraintFactory factory) {
-        var upSteps = factory.forEach(MotherRollOrder.class)
-                .filter(order -> order.getPreviousOrder() != null 
-                        && order.getPreviousOrder().getThickness() < order.getThickness());
-
-        var downSteps = factory.forEach(MotherRollOrder.class)
-                .filter(order -> order.getPreviousOrder() != null 
-                        && order.getPreviousOrder().getThickness() > order.getThickness());
-
-        return upSteps.join(downSteps,
-                        ai.timefold.solver.core.api.score.stream.Joiners.equal(order -> 
-                                order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
-                .penalize(HardMediumSoftScore.ONE_HARD)
-                .asConstraint("HC4-厚度单调流向");
-    }
-
-    // ===== MC1：过滤器后20天优先顺序 =====
-
-    private static final java.util.Map<String, Integer> FILTER_PREFERRED_ORDER = java.util.Map.of(
-            "T19EST", 1,
-            "T4FDX", 2,
-            "T4FDY", 2,
-            "T5FDX", 3,
-            "T7FDX", 4
-    );
-
-    /**
-     * MC1：换过滤器后20天内，优先生产特定的型号（按预设字典排序）。
-     * 如果处于20天保护期内出现非预期倒装，每跨越一级扣除 1 Medium。
-     */
-    Constraint filterChangePreferredOrder(ConstraintFactory factory) {
-        return factory.forEachUniquePair(MotherRollOrder.class,
-                        ai.timefold.solver.core.api.score.stream.Joiners.equal(order -> 
-                                order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
-                .filter((o1, o2) -> {
-                    if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
-                    Integer rank1 = FILTER_PREFERRED_ORDER.get(o1.getProductCode());
-                    Integer rank2 = FILTER_PREFERRED_ORDER.get(o2.getProductCode());
-                    if (rank1 == null || rank2 == null) return false;
-                    
-                    if (o1.getSequenceIndex() < o2.getSequenceIndex()) {
-                        return rank1 > rank2; // rank 数值越小代表越优先，若先执行的任务 rank 更大即为倒置
-                    } else if (o2.getSequenceIndex() < o1.getSequenceIndex()) {
-                        return rank2 > rank1; // o2 在前，它却更大，违规
-                    }
-                    return false;
-                })
-                .join(com.changyang.scheduling.domain.FilterChangePlan.class,
-                        ai.timefold.solver.core.api.score.stream.Joiners.equal((o1, o2) -> o1.getAssignedLine().getId(), 
-                                com.changyang.scheduling.domain.FilterChangePlan::getLineId))
-                .filter((o1, o2, filter) -> {
-                    if (o1.getStartTime() == null || o2.getStartTime() == null) return false;
-                    long d1 = java.time.temporal.ChronoUnit.DAYS.between(filter.getChangeTime(), o1.getStartTime());
-                    long d2 = java.time.temporal.ChronoUnit.DAYS.between(filter.getChangeTime(), o2.getStartTime());
-                    return d1 >= 0 && d1 <= 20 && d2 >= 0 && d2 <= 20;
-                })
-                .penalize(HardMediumSoftScore.ONE_MEDIUM, (o1, o2, filter) -> {
-                    int rank1 = FILTER_PREFERRED_ORDER.get(o1.getProductCode());
-                    int rank2 = FILTER_PREFERRED_ORDER.get(o2.getProductCode());
-                    return Math.abs(rank1 - rank2);
-                })
-                .asConstraint("MC1-过滤器后20天优先顺序");
-    }
-
-    // ===== MC2：库存>30天不前移 =====
-
-    /**
-     * MC2：库存>30天的订单不应提前生产。
-     * 如果实际开始时间早于预期开始时间，按照提前的小时数处于中等程度惩罚。
-     */
-    Constraint highInventoryShouldNotBeAdvanced(ConstraintFactory factory) {
-        return factory.forEach(MotherRollOrder.class)
-                .filter(order -> order.getStartTime() != null 
-                        && order.getExpectedStartTime() != null
-                        && order.getInventorySupplyDays() > 30.0
-                        && order.getStartTime().isBefore(order.getExpectedStartTime()))
-                .penalize(HardMediumSoftScore.ONE_MEDIUM, order -> 
-                        (int) java.time.temporal.ChronoUnit.HOURS.between(order.getStartTime(), order.getExpectedStartTime()))
-                .asConstraint("MC2-高库存不前移");
-    }
-
-    // ===== HC1：产品-产线兼容性 =====
-
-    /**
-     * HC1：订单必须分配到兼容产线上。
-     * 如果订单的 compatibleLines 不包含所分配产线的 lineCode，则违反硬约束。
-     */
-    Constraint productLineMustBeCompatible(ConstraintFactory factory) {
-        return factory.forEach(MotherRollOrder.class)
-                .filter(order -> order.getAssignedLine() != null
-                        && !order.isCompatibleWith(order.getAssignedLine()))
-                .penalize(HardMediumSoftScore.ONE_HARD)
-                .asConstraint("HC1-产品产线兼容");
-    }
-
-    // ===== HC5：同产线子任务保序 =====
-
-    /**
-     * HC5：如果同一个母任务被拆分为多个子任务，
-     * 它们在同一个产线上必须按照 dayIndex 的顺序排列。
-     * 即排在前面的子任务的 dayIndex 必须严格小于排在后面的。
-     */
-    Constraint subTaskMustMaintainOrder(ConstraintFactory factory) {
-        return factory.forEachUniquePair(MotherRollOrder.class,
-                        ai.timefold.solver.core.api.score.stream.Joiners.equal(MotherRollOrder::getParentTaskId))
-                .filter((o1, o2) -> {
-                    if (o1.getAssignedLine() == null || o2.getAssignedLine() == null) return false;
-                    if (!o1.getAssignedLine().getId().equals(o2.getAssignedLine().getId())) return false;
-                    if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
-                    
-                    if (o1.getSequenceIndex() < o2.getSequenceIndex()) {
-                        return o1.getDayIndex() >= o2.getDayIndex(); // o1 排在前面，但 dayIndex >= o2，说明倒序
-                    } else if (o2.getSequenceIndex() < o1.getSequenceIndex()) {
-                        return o2.getDayIndex() >= o1.getDayIndex(); // o2 排在前面，但 dayIndex >= o1，说明倒序
-                    }
-                    return false;
-                })
-                .penalize(HardMediumSoftScore.ONE_HARD)
-                .asConstraint("HC5-子任务保序");
-    }
-
     // ===== HC3：停机冲突 =====
 
     /**
@@ -207,26 +96,163 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
     Constraint noOverlapWithExceptionTime(ConstraintFactory factory) {
         return factory.forEach(MotherRollOrder.class)
                 .filter(order -> order.getStartTime() != null && order.getEndTime() != null)
-                .join(com.changyang.scheduling.domain.ExceptionTime.class,
-                        ai.timefold.solver.core.api.score.stream.Joiners.equal(
+                .join(ExceptionTime.class,
+                        Joiners.equal(
                                 order -> order.getAssignedLine().getId(),
-                                com.changyang.scheduling.domain.ExceptionTime::getLineId))
+                                ExceptionTime::getLineId))
                 .filter((order, exception) -> 
                         order.getStartTime().isBefore(exception.getEndTime()) && 
-                        order.getEndTime().isAfter(exception.getStartTime())) // 时间有重叠片段
+                        order.getEndTime().isAfter(exception.getStartTime()))
                 .penalize(HardMediumSoftScore.ONE_HARD, (order, exception) -> {
                     java.time.LocalDateTime overlapStart = order.getStartTime().isAfter(exception.getStartTime()) ? order.getStartTime() : exception.getStartTime();
                     java.time.LocalDateTime overlapEnd = order.getEndTime().isBefore(exception.getEndTime()) ? order.getEndTime() : exception.getEndTime();
-                    return (int) java.time.temporal.ChronoUnit.MINUTES.between(overlapStart, overlapEnd);
+                    return (int) ChronoUnit.MINUTES.between(overlapStart, overlapEnd);
                 })
                 .asConstraint("HC3-停机冲突");
+    }
+
+    // ===== HC4：厚度轮转约束（单峰波浪） =====
+
+    /**
+     * HC4：同一产线上的厚度变化必须遵循"由薄到厚，再由厚到薄"的单峰模式。
+     * 允许1次方向反转（薄→厚→薄 合法），不允许多次反转（薄→厚→薄→厚 违规）。
+     *
+     * 修正点（Codex Review P2）：原实现为严格单调（0次反转），把合法的单峰也判违规。
+     *
+     * 实现方式：找到所有"方向反转点"（prevPrev→prev 方向与 prev→current 方向不同），
+     * 按产线分组统计反转点数量。第1次反转合法（形成单峰），第2次及以后的每次反转惩罚1分。
+     */
+    Constraint thicknessSinglePeak(ConstraintFactory factory) {
+        return factory.forEach(MotherRollOrder.class)
+                .filter(order -> {
+                    if (order.getPreviousOrder() == null) return false;
+                    if (order.getPreviousOrder().getPreviousOrder() == null) return false;
+
+                    int prevPrevT = order.getPreviousOrder().getPreviousOrder().getThickness();
+                    int prevT = order.getPreviousOrder().getThickness();
+                    int curT = order.getThickness();
+
+                    int dir1 = Integer.compare(prevT, prevPrevT);
+                    int dir2 = Integer.compare(curT, prevT);
+
+                    // 平段不算方向变化
+                    if (dir1 == 0 || dir2 == 0) return false;
+                    // 方向不同才是反转点
+                    return dir1 != dir2;
+                })
+                .groupBy(order -> order.getAssignedLine() == null ? null : order.getAssignedLine().getId(),
+                        ConstraintCollectors.count())
+                .filter((lineId, reversalCount) -> reversalCount > 1)
+                .penalize(HardMediumSoftScore.ONE_HARD, (lineId, reversalCount) -> reversalCount - 1)
+                .asConstraint("HC4-厚度单峰波浪");
+    }
+
+    // ===== HC5：同产线子任务保序 =====
+
+    /**
+     * HC5：如果同一个母任务被拆分为多个子任务，
+     * 它们在同一个产线上必须按照 dayIndex 的顺序排列。
+     */
+    Constraint subTaskMustMaintainOrder(ConstraintFactory factory) {
+        return factory.forEachUniquePair(MotherRollOrder.class,
+                        Joiners.equal(MotherRollOrder::getParentTaskId))
+                .filter((o1, o2) -> {
+                    if (o1.getAssignedLine() == null || o2.getAssignedLine() == null) return false;
+                    if (!o1.getAssignedLine().getId().equals(o2.getAssignedLine().getId())) return false;
+                    if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
+                    
+                    if (o1.getSequenceIndex() < o2.getSequenceIndex()) {
+                        return o1.getDayIndex() >= o2.getDayIndex();
+                    } else if (o2.getSequenceIndex() < o1.getSequenceIndex()) {
+                        return o2.getDayIndex() >= o1.getDayIndex();
+                    }
+                    return false;
+                })
+                .penalize(HardMediumSoftScore.ONE_HARD)
+                .asConstraint("HC5-子任务保序");
+    }
+
+    // ===== MC1：过滤器后20天优先顺序 =====
+
+    /**
+     * 过滤器后优先级映射：使用 "productCode_thickness" 组合键。
+     * 修正点（Codex Review P4）：原来用 T19EST 等 key 无法匹配实际 productCode。
+     * 对照 plan.md 第128-132行的完整优先级序列重建。
+     */
+    private static final Map<String, Integer> FILTER_PREFERRED_ORDER = Map.ofEntries(
+            Map.entry("EST_19", 1),   // T19EST 厚度188 高光
+            Map.entry("FDX_4", 2),    // T4FDX
+            Map.entry("FDY_4", 2),    // T4FDY（同 rank）
+            Map.entry("FDX_5", 3),    // T5FDX
+            Map.entry("FDX_7", 4),    // T7FDX
+            Map.entry("DJX_24", 5),   // T24DJX
+            Map.entry("EST_9", 6)     // T9EST
+    );
+
+    /** 构建 MC1 的查找 key */
+    private static String filterKey(MotherRollOrder order) {
+        return order.getProductCode() + "_" + order.getThickness();
+    }
+
+    /**
+     * MC1：换过滤器后20天内，优先生产特定的型号（按预设字典排序）。
+     * 如果处于20天保护期内出现非预期倒装，每跨越一级扣除 1 Medium。
+     */
+    Constraint filterChangePreferredOrder(ConstraintFactory factory) {
+        return factory.forEachUniquePair(MotherRollOrder.class,
+                        Joiners.equal(order ->
+                                order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
+                .filter((o1, o2) -> {
+                    if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
+                    Integer rank1 = FILTER_PREFERRED_ORDER.get(filterKey(o1));
+                    Integer rank2 = FILTER_PREFERRED_ORDER.get(filterKey(o2));
+                    if (rank1 == null || rank2 == null) return false;
+                    
+                    if (o1.getSequenceIndex() < o2.getSequenceIndex()) {
+                        return rank1 > rank2;
+                    } else if (o2.getSequenceIndex() < o1.getSequenceIndex()) {
+                        return rank2 > rank1;
+                    }
+                    return false;
+                })
+                .join(FilterChangePlan.class,
+                        Joiners.equal((o1, o2) -> o1.getAssignedLine().getId(),
+                                FilterChangePlan::getLineId))
+                .filter((o1, o2, filter) -> {
+                    if (o1.getStartTime() == null || o2.getStartTime() == null) return false;
+                    long d1 = ChronoUnit.DAYS.between(filter.getChangeTime(), o1.getStartTime());
+                    long d2 = ChronoUnit.DAYS.between(filter.getChangeTime(), o2.getStartTime());
+                    return d1 >= 0 && d1 <= 20 && d2 >= 0 && d2 <= 20;
+                })
+                .penalize(HardMediumSoftScore.ONE_MEDIUM, (o1, o2, filter) -> {
+                    int rank1 = FILTER_PREFERRED_ORDER.get(filterKey(o1));
+                    int rank2 = FILTER_PREFERRED_ORDER.get(filterKey(o2));
+                    return Math.abs(rank1 - rank2);
+                })
+                .asConstraint("MC1-过滤器后20天优先顺序");
+    }
+
+    // ===== MC2：库存>30天不前移 =====
+
+    /**
+     * MC2：库存>30天的订单不应提前生产。
+     * 如果实际开始时间早于预期开始时间，按照提前的小时数惩罚。
+     */
+    Constraint highInventoryShouldNotBeAdvanced(ConstraintFactory factory) {
+        return factory.forEach(MotherRollOrder.class)
+                .filter(order -> order.getStartTime() != null 
+                        && order.getExpectedStartTime() != null
+                        && order.getInventorySupplyDays() > 30.0
+                        && order.getStartTime().isBefore(order.getExpectedStartTime()))
+                .penalize(HardMediumSoftScore.ONE_MEDIUM, order -> 
+                        (int) ChronoUnit.HOURS.between(order.getStartTime(), order.getExpectedStartTime()))
+                .asConstraint("MC2-高库存不前移");
     }
 
     // ===== SC1：换型时间最小化 =====
 
     /**
      * SC1：每次换型时，惩罚等同于换型分钟数。
-     * （通过降维简化：直接读取 MotherRollOrder 影子变量上的 changeoverMinutes）
      */
     Constraint minimizeChangeoverTime(ConstraintFactory factory) {
         return factory.forEach(MotherRollOrder.class)
@@ -242,7 +268,7 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
      */
     Constraint prioritizeByInventorySupplyDays(ConstraintFactory factory) {
         return factory.forEachUniquePair(MotherRollOrder.class,
-                        ai.timefold.solver.core.api.score.stream.Joiners.equal(order -> 
+                        Joiners.equal(order ->
                                 order.getAssignedLine() == null ? null : order.getAssignedLine().getId()))
                 .filter((o1, o2) -> {
                     if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
@@ -268,9 +294,9 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
     Constraint respectExpectedStartTime(ConstraintFactory factory) {
         return factory.forEach(MotherRollOrder.class)
                 .filter(order -> order.getStartTime() != null && order.getExpectedStartTime() != null
-                        && order.getStartTime().isAfter(order.getExpectedStartTime())) // 晚于期望时间
+                        && order.getStartTime().isAfter(order.getExpectedStartTime()))
                 .penalize(HardMediumSoftScore.ONE_SOFT, order -> 
-                        (int) java.time.temporal.ChronoUnit.HOURS.between(order.getExpectedStartTime(), order.getStartTime()))
+                        (int) ChronoUnit.HOURS.between(order.getExpectedStartTime(), order.getStartTime()))
                 .asConstraint("SC3-期望时间偏差");
     }
 
@@ -296,24 +322,21 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
      */
     Constraint continuousProduction(ConstraintFactory factory) {
         return factory.forEachUniquePair(MotherRollOrder.class,
-                        ai.timefold.solver.core.api.score.stream.Joiners.equal(MotherRollOrder::getParentTaskId))
+                        Joiners.equal(MotherRollOrder::getParentTaskId))
                 .filter((o1, o2) -> {
-                    // 只检查逻辑上应该是相邻的两天任务，比如 day 1 和 day 2。避免多重惩罚。
                     if (o1.getParentTaskId() == null || Math.abs(o1.getDayIndex() - o2.getDayIndex()) != 1) return false;
                     if (o1.getAssignedLine() == null || o2.getAssignedLine() == null) return false;
                     
-                    // 如果不在同一条线，直接违规
                     if (!o1.getAssignedLine().getId().equals(o2.getAssignedLine().getId())) return true;
                     
-                    // 如果在同一条线，但 sequenceIndex 不连续，也即被人插队了，也违规
                     if (o1.getSequenceIndex() == null || o2.getSequenceIndex() == null) return false;
                     return Math.abs(o1.getSequenceIndex() - o2.getSequenceIndex()) > 1;
                 })
                 .penalize(HardMediumSoftScore.ONE_SOFT, (o1, o2) -> {
                     if (!o1.getAssignedLine().getId().equals(o2.getAssignedLine().getId())) {
-                        return 1000; // 跨产线
+                        return 1000;
                     }
-                    return 10; // 同线插队
+                    return 10;
                 })
                 .asConstraint("SC5-拆分子任务连续生产");
     }

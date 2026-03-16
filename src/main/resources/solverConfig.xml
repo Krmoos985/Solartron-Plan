@@ -14,9 +14,10 @@
         <secondsSpentLimit>10</secondsSpentLimit>
     </termination>
 
-    <constructionHeuristic>
-        <constructionHeuristicType>FIRST_FIT_DECREASING</constructionHeuristicType>
-    </constructionHeuristic>
+    <!-- 换用 O(N) 一次性填充的自定义分配逻辑，避免 CH 阶段在存在大量级联依赖下引发指数爆炸 -->
+    <customPhase>
+        <customPhaseCommandClass>com.changyang.scheduling.solver.FastAssignInitPhase</customPhaseCommandClass>
+    </customPhase>
 
     <localSearch>
         <localSearchType>LATE_ACCEPTANCE</localSearchType>

@@ -160,7 +160,14 @@ public class SchedulingController {
         Map<String, Object> responseMap = new HashMap<>();
         if (schedule.getScore() != null) {
             responseMap.put("score", schedule.getScore().toString());
+            responseMap.put("isFeasible", schedule.getScore().isFeasible());
         }
+
+        // 完整性校验
+        int unassignedCount = SchedulingService.getUnassignedCount(schedule);
+        responseMap.put("totalOrders", schedule.getOrders().size());
+        responseMap.put("unassignedCount", unassignedCount);
+        responseMap.put("isFullyInitialized", unassignedCount == 0);
         
         Map<String, List<MergedTask>> lineTasks = new HashMap<>();
         if (schedule.getProductionLines() != null) {

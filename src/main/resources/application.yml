@@ -10,7 +10,7 @@ server:
 timefold:
   solver:
     termination:
-      spent-limit: 10s
+      spent-limit: 60s
 
 # 日志
 logging:
