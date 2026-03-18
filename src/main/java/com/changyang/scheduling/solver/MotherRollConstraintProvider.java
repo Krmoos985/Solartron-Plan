@@ -24,17 +24,16 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
     @Override
     public Constraint[] defineConstraints(ConstraintFactory factory) {
         return new Constraint[]{
-                /*
-                 * 当前 Excel 版本只稳定提供：
-                 * 1. 产品/产线兼容关系
-                 * 2. 配方、型号、厚度、时长这些与换型直接相关的数据
-                 *
-                 * 先只启用“可分配到哪条线”与“换型时间最小化”两类约束，
-                 * 暂不启用库存、过滤器、停机、厚度波峰、按天拆分连续性等
-                 * 依赖额外业务数据或更细时间建模的规则。
-                 */
                 productLineMustBeCompatible(factory),
-                minimizeChangeoverTime(factory)
+                urgentInventoryMustBePrioritized(factory),
+                noOverlapWithExceptionTime(factory),
+                thicknessSinglePeak(factory),
+                filterChangePreferredOrder(factory),
+                highInventoryShouldNotBeAdvanced(factory),
+                minimizeChangeoverTime(factory),
+                prioritizeByInventorySupplyDays(factory),
+                respectExpectedStartTime(factory),
+                preferredLineMatch(factory)
         };
     }
 
@@ -48,8 +47,8 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
         return factory.forEach(MotherRollOrder.class)
                 .filter(order -> order.getAssignedLine() != null
                         && !order.isCompatibleWith(order.getAssignedLine()))
-                .penalize(HardMediumSoftScore.ONE_HARD)
-                .asConstraint("HC1-产品产线兼容");
+                .penalizeConfigurable()
+                .asConstraint(SchedulingConstraintIds.HC1);
     }
 
     // ===== HC2：库存<10天强制优先（只看第一天子任务） =====
@@ -83,8 +82,8 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                     }
                     return false;
                 })
-                .penalize(HardMediumSoftScore.ONE_HARD)
-                .asConstraint("HC2-紧急库存优先");
+                .penalizeConfigurable()
+                .asConstraint(SchedulingConstraintIds.HC2);
     }
 
     // ===== HC3：停机冲突 =====
@@ -103,12 +102,12 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                 .filter((order, exception) -> 
                         order.getStartTime().isBefore(exception.getEndTime()) && 
                         order.getEndTime().isAfter(exception.getStartTime()))
-                .penalize(HardMediumSoftScore.ONE_HARD, (order, exception) -> {
+                .penalizeConfigurable((order, exception) -> {
                     java.time.LocalDateTime overlapStart = order.getStartTime().isAfter(exception.getStartTime()) ? order.getStartTime() : exception.getStartTime();
                     java.time.LocalDateTime overlapEnd = order.getEndTime().isBefore(exception.getEndTime()) ? order.getEndTime() : exception.getEndTime();
                     return (int) ChronoUnit.MINUTES.between(overlapStart, overlapEnd);
                 })
-                .asConstraint("HC3-停机冲突");
+                .asConstraint(SchedulingConstraintIds.HC3);
     }
 
     // ===== HC4：厚度轮转约束（单峰波浪） =====
@@ -143,8 +142,8 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                 .groupBy(order -> order.getAssignedLine() == null ? null : order.getAssignedLine().getId(),
                         ConstraintCollectors.count())
                 .filter((lineId, reversalCount) -> reversalCount > 1)
-                .penalize(HardMediumSoftScore.ONE_HARD, (lineId, reversalCount) -> reversalCount - 1)
-                .asConstraint("HC4-厚度单峰波浪");
+                .penalizeConfigurable((lineId, reversalCount) -> reversalCount - 1)
+                .asConstraint(SchedulingConstraintIds.HC4);
     }
 
     // ===== HC5：同产线子任务保序 =====
@@ -224,12 +223,12 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                     long d2 = ChronoUnit.DAYS.between(filter.getChangeTime(), o2.getStartTime());
                     return d1 >= 0 && d1 <= 20 && d2 >= 0 && d2 <= 20;
                 })
-                .penalize(HardMediumSoftScore.ONE_MEDIUM, (o1, o2, filter) -> {
+                .penalizeConfigurable((o1, o2, filter) -> {
                     int rank1 = FILTER_PREFERRED_ORDER.get(filterKey(o1));
                     int rank2 = FILTER_PREFERRED_ORDER.get(filterKey(o2));
                     return Math.abs(rank1 - rank2);
                 })
-                .asConstraint("MC1-过滤器后20天优先顺序");
+                .asConstraint(SchedulingConstraintIds.MC1);
     }
 
     // ===== MC2：库存>30天不前移 =====
@@ -244,9 +243,9 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                         && order.getExpectedStartTime() != null
                         && order.getInventorySupplyDays() > 30.0
                         && order.getStartTime().isBefore(order.getExpectedStartTime()))
-                .penalize(HardMediumSoftScore.ONE_MEDIUM, order -> 
+                .penalizeConfigurable(order -> 
                         (int) ChronoUnit.HOURS.between(order.getStartTime(), order.getExpectedStartTime()))
-                .asConstraint("MC2-高库存不前移");
+                .asConstraint(SchedulingConstraintIds.MC2);
     }
 
     // ===== SC1：换型时间最小化 =====
@@ -257,8 +256,8 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
     Constraint minimizeChangeoverTime(ConstraintFactory factory) {
         return factory.forEach(MotherRollOrder.class)
                 .filter(order -> order.getPreviousOrder() != null && order.getChangeoverMinutes() != null && order.getChangeoverMinutes() > 0)
-                .penalize(HardMediumSoftScore.ONE_SOFT, MotherRollOrder::getChangeoverMinutes)
-                .asConstraint("SC1-换型最小化");
+                .penalizeConfigurable(MotherRollOrder::getChangeoverMinutes)
+                .asConstraint(SchedulingConstraintIds.SC1);
     }
 
     // ===== SC2：库存天数优先级 =====
@@ -279,11 +278,11 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                     }
                     return false;
                 })
-                .penalize(HardMediumSoftScore.ofSoft(2), (o1, o2) -> {
+                .penalizeConfigurable((o1, o2) -> {
                     double diff = Math.abs(o1.getInventorySupplyDays() - o2.getInventorySupplyDays());
                     return (int) diff;
                 })
-                .asConstraint("SC2-库存天数优先级");
+                .asConstraint(SchedulingConstraintIds.SC2);
     }
 
     // ===== SC3：期望生产时间偏差 =====
@@ -295,9 +294,9 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
         return factory.forEach(MotherRollOrder.class)
                 .filter(order -> order.getStartTime() != null && order.getExpectedStartTime() != null
                         && order.getStartTime().isAfter(order.getExpectedStartTime()))
-                .penalize(HardMediumSoftScore.ONE_SOFT, order -> 
+                .penalizeConfigurable(order -> 
                         (int) ChronoUnit.HOURS.between(order.getExpectedStartTime(), order.getStartTime()))
-                .asConstraint("SC3-期望时间偏差");
+                .asConstraint(SchedulingConstraintIds.SC3);
     }
 
     // ===== SC4：特定产线偏好 =====
@@ -310,8 +309,8 @@ public class MotherRollConstraintProvider implements ConstraintProvider {
                 .filter(order -> order.getAssignedLine() != null 
                         && order.getPreferredLineCode() != null 
                         && !order.getAssignedLine().getLineCode().equals(order.getPreferredLineCode()))
-                .penalize(HardMediumSoftScore.ONE_SOFT)
-                .asConstraint("SC4-特定产线偏好");
+                .penalizeConfigurable()
+                .asConstraint(SchedulingConstraintIds.SC4);
     }
 
     // ===== SC5：拆分子任务连续生产 =====

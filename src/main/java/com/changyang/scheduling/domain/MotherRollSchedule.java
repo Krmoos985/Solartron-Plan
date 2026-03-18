@@ -3,8 +3,10 @@ package com.changyang.scheduling.domain;
 import ai.timefold.solver.core.api.domain.solution.PlanningEntityCollectionProperty;
 import ai.timefold.solver.core.api.domain.solution.PlanningScore;
 import ai.timefold.solver.core.api.domain.solution.PlanningSolution;
+import ai.timefold.solver.core.api.domain.constraintweight.ConstraintConfigurationProvider;
 import ai.timefold.solver.core.api.domain.valuerange.ValueRangeProvider;
 import ai.timefold.solver.core.api.score.buildin.hardmediumsoft.HardMediumSoftScore;
+import com.changyang.scheduling.solver.SchedulingConstraintConfiguration;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -50,6 +52,9 @@ public class MotherRollSchedule {
     @PlanningScore
     private HardMediumSoftScore score;
 
+    @ConstraintConfigurationProvider
+    private SchedulingConstraintConfiguration constraintConfiguration = SchedulingConstraintConfiguration.defaults();
+
     // ==================== 问题事实 (Problem Facts) ====================
 
     @ai.timefold.solver.core.api.domain.solution.ProblemFactCollectionProperty
@@ -70,6 +75,7 @@ public class MotherRollSchedule {
     public MotherRollSchedule(List<ProductionLine> productionLines, List<MotherRollOrder> orders) {
         this.productionLines = productionLines;
         this.orders = orders;
+        this.constraintConfiguration = SchedulingConstraintConfiguration.defaults();
         this.exceptionTimes = new java.util.ArrayList<>();
         this.filterChangePlans = new java.util.ArrayList<>();
         this.changeoverEntries = new java.util.ArrayList<>();

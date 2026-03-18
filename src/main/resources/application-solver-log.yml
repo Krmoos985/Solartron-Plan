@@ -1,0 +1,6 @@
+logging:
+  level:
+    "[ai.timefold.solver.core.impl.solver.DefaultSolver]": DEBUG
+    "[ai.timefold.solver.core.impl.phase.custom.DefaultCustomPhase]": DEBUG
+    "[ai.timefold.solver.core.impl.localsearch.DefaultLocalSearchPhase]": DEBUG
+    "[com.changyang.scheduling.service.SchedulingService]": DEBUG

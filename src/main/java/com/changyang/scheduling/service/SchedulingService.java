@@ -1,14 +1,21 @@
 package com.changyang.scheduling.service;
 
+import ai.timefold.solver.core.api.solver.SolverConfigOverride;
 import ai.timefold.solver.core.api.solver.SolverJob;
+import ai.timefold.solver.core.api.solver.SolverJobBuilder;
 import ai.timefold.solver.core.api.solver.SolverManager;
 import ai.timefold.solver.core.api.solver.SolverStatus;
+import ai.timefold.solver.core.config.solver.termination.TerminationConfig;
 import com.changyang.scheduling.domain.MotherRollSchedule;
 import com.changyang.scheduling.domain.ProductionLine;
+import com.changyang.scheduling.rest.dto.SolveRequestConfigDto;
+import com.changyang.scheduling.rest.dto.TerminationSettingsDto;
+import com.changyang.scheduling.solver.SchedulingConstraintConfiguration;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -19,6 +26,8 @@ import java.util.concurrent.ExecutionException;
 @RequiredArgsConstructor
 public class SchedulingService {
 
+    private static final long PROGRESS_LOG_INTERVAL_MILLIS = 2_000L;
+
     private final SolverManager<MotherRollSchedule, String> solverManager;
     private final ChangeoverService changeoverService;
 
@@ -26,139 +35,250 @@ public class SchedulingService {
     private final ConcurrentMap<String, Throwable> jobErrors = new ConcurrentHashMap<>();
 
     /**
-     * 预处理：初始化换型缓存。
-     * 当前 Excel 模式下先保持原始订单粒度，不启用按天拆分，
-     * 优先验证“分线 + 换型时间最小化”主链路。
+     * Current Excel mode keeps original order granularity.
+     * Daily splitting stays disabled until the split-specific workflow is re-enabled.
      */
-    private MotherRollSchedule preprocess(MotherRollSchedule problem) {
+    private MotherRollSchedule preprocess(MotherRollSchedule problem, SolveRequestConfigDto config) {
         if (problem.getChangeoverEntries() != null && !problem.getChangeoverEntries().isEmpty()) {
             changeoverService.initCache(problem.getChangeoverEntries());
         }
+        problem.setConstraintConfiguration(SchedulingConstraintConfiguration.fromSelection(
+                config == null ? null : config.getConstraints()
+        ));
         return problem;
     }
 
-    /**
-     * 同步求解（阻塞直到求解结束）
-     */
     public MotherRollSchedule solve(MotherRollSchedule problem) {
-        log.info("开始同步排程...");
-        MotherRollSchedule processedProblem = preprocess(problem);
+        return solve(problem, null);
+    }
+
+    public MotherRollSchedule solve(MotherRollSchedule problem, SolveRequestConfigDto config) {
+        log.info("Start synchronous solving.");
+        MotherRollSchedule processedProblem = preprocess(problem, config);
+        logEffectiveConfiguration("sync", processedProblem.getConstraintConfiguration(), config == null ? null : config.getTermination());
 
         String jobId = UUID.randomUUID().toString();
-        SolverJob<MotherRollSchedule, String> solverJob = solverManager.solveAndListen(jobId,
-                id -> processedProblem,
-                bestSolution -> { /* ignore intermediate */ });
+        SolverProgressTracker progressTracker = new SolverProgressTracker(jobId);
+
+        SolverJobBuilder<MotherRollSchedule, String> builder = solverManager.solveBuilder()
+                .withProblemId(jobId)
+                .withProblemFinder(id -> processedProblem)
+                .withBestSolutionConsumer(progressTracker::logProgress);
+
+        SolverConfigOverride<MotherRollSchedule> configOverride =
+                buildConfigOverride(config == null ? null : config.getTermination());
+        if (configOverride != null) {
+            builder.withConfigOverride(configOverride);
+        }
+
+        SolverJob<MotherRollSchedule, String> solverJob = builder.run();
 
         try {
             MotherRollSchedule solution = solverJob.getFinalBestSolution();
             validateSolution(solution);
             return solution;
         } catch (InterruptedException | ExecutionException e) {
-            log.error("排程失败", e);
-            throw new RuntimeException("排程求解执行失败", e);
+            log.error("Synchronous solving failed.", e);
+            throw new RuntimeException("Scheduling solve failed.", e);
         }
     }
 
-    /**
-     * 异步求解：提交任务并返回 jobId
-     */
     public String solveAsync(MotherRollSchedule problem) {
+        return solveAsync(problem, null);
+    }
+
+    public String solveAsync(MotherRollSchedule problem, SolveRequestConfigDto config) {
         String jobId = UUID.randomUUID().toString();
-        log.info("提交异步排程任务，jobId: {}", jobId);
+        log.info("Submitted async solving job, jobId={}", jobId);
 
-        MotherRollSchedule processedProblem = preprocess(problem);
+        MotherRollSchedule processedProblem = preprocess(problem, config);
+        logEffectiveConfiguration("async", processedProblem.getConstraintConfiguration(), config == null ? null : config.getTermination());
+        SolverProgressTracker progressTracker = new SolverProgressTracker(jobId);
 
-        solverManager.solveBuilder()
+        SolverJobBuilder<MotherRollSchedule, String> builder = solverManager.solveBuilder()
                 .withProblemId(jobId)
                 .withProblemFinder(id -> processedProblem)
                 .withBestSolutionConsumer(bestSolution -> {
-                    log.info("任务 {} 找到更好的解: {}", jobId, bestSolution.getScore());
+                    progressTracker.logProgress(bestSolution);
+                    log.info("Job {} found a better solution: {}", jobId, bestSolution.getScore());
                     jobResults.put(jobId, bestSolution);
                 })
                 .withFinalBestSolutionConsumer(finalBestSolution -> {
-                    log.info("异步排程任务 {} 完成，最终 Score: {}", jobId, finalBestSolution.getScore());
+                    log.info("Async solving job {} finished, final score={}", jobId, finalBestSolution.getScore());
                     validateSolution(finalBestSolution);
                     jobResults.put(jobId, finalBestSolution);
                 })
                 .withExceptionHandler((id, throwable) -> {
-                    log.error("异步排程任务 {} 执行异常", id, throwable);
+                    log.error("Async solving job {} failed.", id, throwable);
                     jobErrors.put(id, throwable);
-                })
-                .run();
+                });
 
+        SolverConfigOverride<MotherRollSchedule> configOverride =
+                buildConfigOverride(config == null ? null : config.getTermination());
+        if (configOverride != null) {
+            builder.withConfigOverride(configOverride);
+        }
+
+        builder.run();
         return jobId;
     }
 
-    /**
-     * 验证求解结果的完整性
-     */
-    public void validateSolution(MotherRollSchedule solution) {
-        int totalOrders = solution.getOrders().size();
-        int assignedCount = 0;
-
-        for (ProductionLine line : solution.getProductionLines()) {
-            assignedCount += line.getOrders().size();
+    private SolverConfigOverride<MotherRollSchedule> buildConfigOverride(TerminationSettingsDto termination) {
+        if (termination == null) {
+            return null;
         }
 
+        TerminationConfig terminationConfig = new TerminationConfig();
+        if (termination.getTimeLimitSeconds() != null && termination.getTimeLimitSeconds() > 0) {
+            terminationConfig.setSpentLimit(Duration.ofSeconds(termination.getTimeLimitSeconds()));
+        }
+        if (termination.getUnimprovedTimeLimitSeconds() != null && termination.getUnimprovedTimeLimitSeconds() > 0) {
+            terminationConfig.setUnimprovedSpentLimit(Duration.ofSeconds(termination.getUnimprovedTimeLimitSeconds()));
+        }
+        if (termination.getStepCountLimit() != null && termination.getStepCountLimit() > 0) {
+            terminationConfig.setStepCountLimit(termination.getStepCountLimit());
+        }
+        if (Boolean.TRUE.equals(termination.getStopOnFeasible())) {
+            terminationConfig.setBestScoreFeasible(Boolean.TRUE);
+        }
+
+        if (!terminationConfig.isConfigured()) {
+            return null;
+        }
+        return new SolverConfigOverride<MotherRollSchedule>().withTerminationConfig(terminationConfig);
+    }
+
+    private void logEffectiveConfiguration(
+            String solveMode,
+            SchedulingConstraintConfiguration constraintConfiguration,
+            TerminationSettingsDto termination) {
+        SchedulingConstraintConfiguration effectiveConfiguration =
+                constraintConfiguration == null ? SchedulingConstraintConfiguration.defaults() : constraintConfiguration;
+
+        log.info("=== Effective constraint configuration [{}] ===", solveMode);
+        log.info(
+                "Enabled constraints ({}): {}",
+                effectiveConfiguration.describeEnabledConstraints().size(),
+                String.join(", ", effectiveConfiguration.describeEnabledConstraints())
+        );
+        log.info(
+                "Disabled implemented constraints ({}): {}",
+                effectiveConfiguration.describeDisabledConstraints().size(),
+                String.join(", ", effectiveConfiguration.describeDisabledConstraints())
+        );
+        log.info(
+                "Split-locked constraints: {}",
+                String.join(", ", SchedulingConstraintConfiguration.splitLockedConstraintCodes())
+        );
+
+        if (termination == null) {
+            log.info("Termination override: none, using application defaults.");
+            return;
+        }
+
+        log.info(
+                "Termination settings: timeLimit={}s, unimprovedLimit={}s, stepLimit={}, stopOnFeasible={}",
+                termination.getTimeLimitSeconds(),
+                termination.getUnimprovedTimeLimitSeconds(),
+                termination.getStepCountLimit(),
+                termination.getStopOnFeasible()
+        );
+    }
+
+    public void validateSolution(MotherRollSchedule solution) {
+        int totalOrders = solution.getOrders().size();
+        int assignedCount = getAssignedCount(solution);
         int unassignedCount = totalOrders - assignedCount;
         boolean fullyInitialized = (unassignedCount == 0);
         boolean feasible = solution.getScore() != null && solution.getScore().isFeasible();
 
-        log.info("=== 排程结果校验 ===");
-        log.info("总任务数: {}, 已分配: {}, 未分配: {}", totalOrders, assignedCount, unassignedCount);
-        log.info("评分: {}", solution.getScore());
-        log.info("完全初始化: {}", fullyInitialized);
-        log.info("硬约束可行: {}", feasible);
+        log.info("=== Schedule validation ===");
+        log.info("Total orders: {}, assigned: {}, unassigned: {}", totalOrders, assignedCount, unassignedCount);
+        log.info("Score: {}", solution.getScore());
+        log.info("Fully initialized: {}", fullyInitialized);
+        log.info("Hard-score feasible: {}", feasible);
 
         if (!fullyInitialized) {
-            log.warn("⚠️ 排程结果不完整！{}/{}条任务未被分配到产线。" +
-                            "可能原因：求解时间不足、硬约束过严。请增加 timefold.solver.termination.spent-limit 配置。",
-                    unassignedCount, totalOrders);
+            log.warn(
+                    "The schedule is incomplete. {}/{} orders are still unassigned. " +
+                            "Possible causes: too little solving time or overly strict hard constraints.",
+                    unassignedCount,
+                    totalOrders
+            );
         }
 
         if (!feasible) {
-            log.warn("⚠️ 排程结果仍存在硬约束冲突，当前结果只可用于调试，不应直接用于业务下发。");
+            log.warn("The resulting schedule still violates hard constraints and should only be used for debugging.");
         }
 
-        // 打印产线分配统计
         for (ProductionLine line : solution.getProductionLines()) {
-            log.info("  {} ({}): {}条任务", line.getName(), line.getId(), line.getOrders().size());
+            log.info("  {} ({}): {} orders", line.getName(), line.getId(), line.getOrders().size());
         }
     }
 
-    /**
-     * 获取未分配任务数量
-     */
     public static int getUnassignedCount(MotherRollSchedule solution) {
         int totalOrders = solution.getOrders().size();
+        int assignedCount = getAssignedCount(solution);
+        return totalOrders - assignedCount;
+    }
+
+    private static int getAssignedCount(MotherRollSchedule solution) {
         int assignedCount = 0;
         for (ProductionLine line : solution.getProductionLines()) {
             assignedCount += line.getOrders().size();
         }
-        return totalOrders - assignedCount;
+        return assignedCount;
     }
 
-    /**
-     * 查询 SolverJob 状态
-     */
     public SolverStatus getStatus(String jobId) {
         return solverManager.getSolverStatus(jobId);
     }
 
-    /**
-     * 获取异步任务结果
-     */
     public MotherRollSchedule getResult(String jobId) {
         if (jobErrors.containsKey(jobId)) {
-            throw new RuntimeException("任务执行中出现异常", jobErrors.get(jobId));
+            throw new RuntimeException("Job execution failed.", jobErrors.get(jobId));
         }
         return jobResults.get(jobId);
     }
 
-    /**
-     * 提前终止求解
-     */
     public void stopSolver(String jobId) {
         solverManager.terminateEarly(jobId);
+    }
+
+    private static final class SolverProgressTracker {
+
+        private final String jobId;
+        private final long startedAtMillis;
+        private long lastLoggedAtMillis = Long.MIN_VALUE;
+
+        private SolverProgressTracker(String jobId) {
+            this.jobId = jobId;
+            this.startedAtMillis = System.currentTimeMillis();
+        }
+
+        private void logProgress(MotherRollSchedule bestSolution) {
+            long now = System.currentTimeMillis();
+            if (lastLoggedAtMillis != Long.MIN_VALUE
+                    && now - lastLoggedAtMillis < PROGRESS_LOG_INTERVAL_MILLIS) {
+                return;
+            }
+
+            lastLoggedAtMillis = now;
+            long elapsedSeconds = Math.max(0L, (now - startedAtMillis) / 1000L);
+            int totalOrders = bestSolution.getOrders() == null ? 0 : bestSolution.getOrders().size();
+            int assignedCount = getAssignedCount(bestSolution);
+            int unassignedCount = Math.max(0, totalOrders - assignedCount);
+
+            log.info(
+                    "Solve progress jobId={} elapsed={}s score={} feasible={} assigned={}/{} unassigned={}",
+                    jobId,
+                    elapsedSeconds,
+                    bestSolution.getScore(),
+                    bestSolution.getScore() != null && bestSolution.getScore().isFeasible(),
+                    assignedCount,
+                    totalOrders,
+                    unassignedCount
+            );
+        }
     }
 }

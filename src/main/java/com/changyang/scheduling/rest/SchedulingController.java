@@ -4,18 +4,37 @@ import ai.timefold.solver.core.api.solver.SolverStatus;
 import com.changyang.scheduling.domain.MergedTask;
 import com.changyang.scheduling.domain.MotherRollSchedule;
 import com.changyang.scheduling.domain.ProductionLine;
+import com.changyang.scheduling.rest.dto.ExcelValidationSummaryDto;
+import com.changyang.scheduling.rest.dto.SolveRequestConfigDto;
 import com.changyang.scheduling.service.DemoDataGenerator;
 import com.changyang.scheduling.service.ExcelDataLoader;
+import com.changyang.scheduling.service.ExcelValidationService;
 import com.changyang.scheduling.service.SchedulingService;
 import com.changyang.scheduling.service.TaskMerger;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -31,71 +50,96 @@ public class SchedulingController {
     private final TaskMerger taskMerger;
     private final DemoDataGenerator demoDataGenerator;
     private final ExcelDataLoader excelDataLoader;
+    private final ExcelValidationService excelValidationService;
+    private final ObjectMapper objectMapper;
 
-    // ==================== JSON 排程 ====================
-
-    /**
-     * 同步求解排程（JSON 输入）
-     */
     @PostMapping("/solve")
     public ResponseEntity<Map<String, Object>> solve(@RequestBody MotherRollSchedule problem) {
         MotherRollSchedule solution = schedulingService.solve(problem);
-        return ResponseEntity.ok(buildResponse(solution));
+        return ResponseEntity.ok(buildResponse(solution, null, null));
     }
 
-    /**
-     * 异步提交求解任务（JSON 输入）
-     */
     @PostMapping("/solve-async")
     public ResponseEntity<Map<String, String>> solveAsync(@RequestBody MotherRollSchedule problem) {
         String jobId = schedulingService.solveAsync(problem);
         return ResponseEntity.accepted().body(Map.of("jobId", jobId, "message", "排程任务已提交"));
     }
 
-    // ==================== Excel 排程 ====================
-
-    /**
-     * 同步排程（Excel 上传）
-     *
-     * @param file      Excel 文件（.xlsx）
-     * @param startTime 排程基准开始时间，默认当前时间
-     */
-    @PostMapping("/solve-excel")
-    public ResponseEntity<Map<String, Object>> solveExcel(
+    @PostMapping("/analyze-excel")
+    public ResponseEntity<?> analyzeExcel(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "startTime", required = false) String startTime) {
         try {
             LocalDateTime solveStart = parseStartTime(startTime);
+            byte[] workbookBytes = file.getBytes();
             MotherRollSchedule problem = excelDataLoader.load(file.getInputStream(), solveStart);
-            MotherRollSchedule solution = schedulingService.solve(problem);
-            return ResponseEntity.ok(buildResponse(solution));
+            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(), workbookBytes, problem);
+            return ResponseEntity.ok(validation);
+        } catch (Exception e) {
+            log.error("Excel数据验证失败", e);
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/solve-excel")
+    public ResponseEntity<?> solveExcel(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "startTime", required = false) String startTime,
+            @RequestParam(value = "config", required = false) String configJson) {
+        try {
+            LocalDateTime solveStart = parseStartTime(startTime);
+            SolveRequestConfigDto config = parseConfig(configJson);
+            byte[] workbookBytes = file.getBytes();
+            MotherRollSchedule problem = excelDataLoader.load(file.getInputStream(), solveStart);
+            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(), workbookBytes, problem);
+
+            List<String> selectionErrors = excelValidationService.validateSelection(config.getConstraints(), validation);
+            if (!selectionErrors.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "errors", selectionErrors,
+                        "validation", validation
+                ));
+            }
+
+            MotherRollSchedule solution = schedulingService.solve(problem, config);
+            return ResponseEntity.ok(buildResponse(solution, validation, config));
         } catch (Exception e) {
             log.error("Excel排程失败", e);
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
 
-    /**
-     * 异步排程（Excel 上传）
-     */
     @PostMapping("/solve-excel-async")
-    public ResponseEntity<Map<String, String>> solveExcelAsync(
+    public ResponseEntity<?> solveExcelAsync(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "startTime", required = false) String startTime) {
+            @RequestParam(value = "startTime", required = false) String startTime,
+            @RequestParam(value = "config", required = false) String configJson) {
         try {
             LocalDateTime solveStart = parseStartTime(startTime);
+            SolveRequestConfigDto config = parseConfig(configJson);
+            byte[] workbookBytes = file.getBytes();
             MotherRollSchedule problem = excelDataLoader.load(file.getInputStream(), solveStart);
-            String jobId = schedulingService.solveAsync(problem);
-            return ResponseEntity.accepted().body(Map.of("jobId", jobId, "message", "Excel排程任务已提交"));
+            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(), workbookBytes, problem);
+
+            List<String> selectionErrors = excelValidationService.validateSelection(config.getConstraints(), validation);
+            if (!selectionErrors.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "errors", selectionErrors,
+                        "validation", validation
+                ));
+            }
+
+            String jobId = schedulingService.solveAsync(problem, config);
+            return ResponseEntity.accepted().body(Map.of(
+                    "jobId", jobId,
+                    "message", "Excel排程任务已提交"
+            ));
         } catch (Exception e) {
             log.error("Excel异步排程提交失败", e);
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
 
-    /**
-     * 使用内置 Excel 数据快速演示排程
-     */
     @GetMapping("/demo-real")
     public ResponseEntity<Map<String, Object>> demoReal(
             @RequestParam(value = "startTime", required = false) String startTime) {
@@ -105,7 +149,7 @@ public class SchedulingController {
             try (InputStream is = resource.getInputStream()) {
                 MotherRollSchedule problem = excelDataLoader.load(is, solveStart);
                 MotherRollSchedule solution = schedulingService.solve(problem);
-                return ResponseEntity.ok(buildResponse(solution));
+                return ResponseEntity.ok(buildResponse(solution, null, null));
             }
         } catch (Exception e) {
             log.error("真实数据演示排程失败", e);
@@ -113,11 +157,6 @@ public class SchedulingController {
         }
     }
 
-    // ==================== 任务管理 ====================
-
-    /**
-     * 查询异步任务状态与结果
-     */
     @GetMapping("/status/{jobId}")
     public ResponseEntity<Map<String, Object>> getStatus(@PathVariable String jobId) {
         SolverStatus status = schedulingService.getStatus(jobId);
@@ -126,49 +165,68 @@ public class SchedulingController {
         Map<String, Object> response = new HashMap<>();
         response.put("jobId", jobId);
         response.put("status", status.name());
-        
+
         if (partialOrFinalSolution != null) {
             response.put("score", partialOrFinalSolution.getScore() != null ? partialOrFinalSolution.getScore().toString() : "N/A");
             if (status == SolverStatus.NOT_SOLVING) {
-                response.put("result", buildResponse(partialOrFinalSolution));
+                response.put("result", buildResponse(partialOrFinalSolution, null, null));
             }
         }
-        
+
         return ResponseEntity.ok(response);
     }
 
-    /**
-     * 终止求解任务
-     */
     @DeleteMapping("/stop/{jobId}")
     public ResponseEntity<Map<String, String>> stopSolver(@PathVariable String jobId) {
         schedulingService.stopSolver(jobId);
         return ResponseEntity.ok(Map.of("message", "任务 " + jobId + " 终止信号已发送"));
     }
 
-    /**
-     * 生成演示数据（假数据）
-     */
     @GetMapping("/demo")
     public ResponseEntity<MotherRollSchedule> getDemoData() {
         return ResponseEntity.ok(demoDataGenerator.generateDemoData());
     }
 
-    // ==================== 辅助方法 ====================
+    @GetMapping("/validation-workbook")
+    public ResponseEntity<Resource> getValidationWorkbook() {
+        try {
+            Path workbookPath = Path.of("docs", "validation-data", "validation-workbook.xlsx")
+                    .toAbsolutePath()
+                    .normalize();
+            if (!Files.exists(workbookPath)) {
+                return ResponseEntity.notFound().build();
+            }
 
-    private Map<String, Object> buildResponse(MotherRollSchedule schedule) {
+            Resource resource = new FileSystemResource(workbookPath.toFile());
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename("validation-workbook.xlsx", StandardCharsets.UTF_8)
+                            .build()
+                            .toString())
+                    .contentType(MediaType.parseMediaType(
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                    .body(resource);
+        } catch (Exception e) {
+            log.error("读取内置验证 workbook 失败", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    private Map<String, Object> buildResponse(
+            MotherRollSchedule schedule,
+            ExcelValidationSummaryDto validation,
+            SolveRequestConfigDto config) {
         Map<String, Object> responseMap = new HashMap<>();
         if (schedule.getScore() != null) {
             responseMap.put("score", schedule.getScore().toString());
             responseMap.put("isFeasible", schedule.getScore().isFeasible());
         }
 
-        // 完整性校验
         int unassignedCount = SchedulingService.getUnassignedCount(schedule);
         responseMap.put("totalOrders", schedule.getOrders().size());
         responseMap.put("unassignedCount", unassignedCount);
         responseMap.put("isFullyInitialized", unassignedCount == 0);
-        
+
         Map<String, List<MergedTask>> lineTasks = new HashMap<>();
         if (schedule.getProductionLines() != null) {
             for (ProductionLine line : schedule.getProductionLines()) {
@@ -177,7 +235,6 @@ public class SchedulingController {
         }
         responseMap.put("lineTasks", lineTasks);
 
-        // 添加排程统计信息
         if (schedule.getProductionLines() != null) {
             Map<String, Object> stats = new HashMap<>();
             for (ProductionLine line : schedule.getProductionLines()) {
@@ -191,8 +248,21 @@ public class SchedulingController {
             }
             responseMap.put("lineStats", stats);
         }
-        
+
+        if (validation != null) {
+            responseMap.put("validation", validation);
+        }
+        if (config != null) {
+            responseMap.put("appliedConfig", config);
+        }
         return responseMap;
+    }
+
+    private SolveRequestConfigDto parseConfig(String configJson) throws Exception {
+        if (configJson == null || configJson.isBlank()) {
+            return new SolveRequestConfigDto();
+        }
+        return objectMapper.readValue(configJson, SolveRequestConfigDto.class);
     }
 
     private LocalDateTime parseStartTime(String startTime) {

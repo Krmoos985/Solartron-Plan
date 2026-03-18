@@ -3,61 +3,226 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Solartron APS | 次世代母卷排程中枢</title>
-    <!-- 引入高品质无衬线字体及等宽字体 -->
+    <title>Solartron APS | 验证与求解工作台</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
-    
-    <div id="app">
-      <header class="topbar">
-        <div class="brand">
-          <span class="logo">✦</span>
-          <h1>Solartron<span class="accent">APS</span></h1>
+    <div class="noise"></div>
+    <div class="app-shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Solartron APS / Solver Console</p>
+          <h1>数据验证、约束配置与排程求解统一工作台</h1>
+          <p class="masthead-copy">围绕当前 Excel 数据做验证。先校验数据质量，再选择约束和终止条件，最后执行同步或异步求解。</p>
         </div>
-        <div class="status-indicator">
-          <div class="dot"></div>
-          <span id="system-status">系统就绪 / SYSTEM READY</span>
+        <div class="system-pill" id="system-pill">
+          <span class="system-dot"></span>
+          <span id="system-status">等待上传 Excel</span>
         </div>
       </header>
-      
-      <main class="dashboard">
-        <section class="control-panel">
-          <h2>排程控制器 <span class="sub-label">Dispatch Core</span></h2>
-          <div class="actions">
-            <button id="btn-sync" class="btn primary">
-              <span class="btn-text">单步推演 Compute</span>
-            </button>
-            <button id="btn-async" class="btn secondary">
-              <span class="btn-text">下发异步排程 Dispatch</span>
-            </button>
-          </div>
-          
-          <div class="metrics-grid">
-            <div class="metric-card">
-              <div class="metric-label">CURRENT SCORE / 当前得分</div>
-              <div class="metric-value" id="val-score">AWAITING</div>
+
+      <main class="workspace">
+        <aside class="column column-left">
+          <section class="panel panel-emphasis">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Data Source</p>
+                <h2>当前数据</h2>
+              </div>
             </div>
-            <div class="metric-card">
-              <div class="metric-label">JOB ID / 任务标识</div>
-              <div class="metric-value" id="val-jobid">—</div>
+
+            <label class="field-label" for="excel-file">Excel 文件</label>
+            <input id="excel-file" class="file-input" type="file" accept=".xlsx" />
+            <p class="field-hint">建议直接上传当前生产 Excel，或上传 `docs/validation-data/validation-workbook.xlsx` 做完整验证。</p>
+
+            <div class="input-grid compact-grid">
+              <label class="field-block">
+                <span class="field-label">排程开始时间</span>
+                <input id="start-time" type="datetime-local" value="2026-03-13T08:00" />
+              </label>
             </div>
-          </div>
+
+            <div class="action-row stack-row">
+              <button id="btn-use-validation-sample" class="btn btn-secondary">直接加载内置验证数据</button>
+              <button id="btn-validate" class="btn btn-primary">先做数据验证</button>
+              <button id="btn-clear" class="btn btn-ghost">清空当前状态</button>
+            </div>
+
+            <div class="file-meta">
+              <div>
+                <span class="meta-label">当前文件</span>
+                <strong id="file-name">未选择</strong>
+              </div>
+              <div>
+                <span class="meta-label">校验状态</span>
+                <strong id="validation-state">未执行</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Validation Summary</p>
+                <h2>数据摘要</h2>
+              </div>
+            </div>
+
+            <div class="metric-grid" id="summary-grid">
+              <div class="metric-tile">
+                <span>订单行数</span>
+                <strong id="metric-orders">--</strong>
+              </div>
+              <div class="metric-tile">
+                <span>双线兼容</span>
+                <strong id="metric-dual-lines">--</strong>
+              </div>
+              <div class="metric-tile">
+                <span>紧急库存</span>
+                <strong id="metric-urgent">--</strong>
+              </div>
+              <div class="metric-tile">
+                <span>高库存</span>
+                <strong id="metric-high-stock">--</strong>
+              </div>
+              <div class="metric-tile">
+                <span>停机窗口</span>
+                <strong id="metric-exceptions">--</strong>
+              </div>
+              <div class="metric-tile">
+                <span>过滤器计划</span>
+                <strong id="metric-filter-plans">--</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Warnings</p>
+                <h2>数据风险</h2>
+              </div>
+            </div>
+            <ul id="warning-list" class="warning-list">
+              <li>尚未执行数据验证。</li>
+            </ul>
+          </section>
+        </aside>
+
+        <section class="column column-center">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Constraint Matrix</p>
+                <h2>约束开关</h2>
+              </div>
+              <p class="panel-note">只开放当前数据可验证的约束。当前模式不支持拆分类约束。</p>
+            </div>
+            <div id="constraint-grid" class="constraint-grid"></div>
+          </section>
+
+          <section class="panel panel-results">
+            <div class="panel-head panel-head-wide">
+              <div>
+                <p class="panel-kicker">Solve Result</p>
+                <h2>排程结果</h2>
+              </div>
+              <div class="result-strip">
+                <div class="result-chip">
+                  <span>Score</span>
+                  <strong id="result-score">--</strong>
+                </div>
+                <div class="result-chip">
+                  <span>Feasible</span>
+                  <strong id="result-feasible">--</strong>
+                </div>
+                <div class="result-chip">
+                  <span>Unassigned</span>
+                  <strong id="result-unassigned">--</strong>
+                </div>
+                <div class="result-chip">
+                  <span>Job ID</span>
+                  <strong id="result-jobid">--</strong>
+                </div>
+              </div>
+            </div>
+
+            <div id="line-container" class="line-container empty-block">
+              等待执行排程。
+            </div>
+          </section>
         </section>
 
-        <section class="schedule-view">
-          <h2>生产线拓扑 <span class="sub-label">Line Topology</span></h2>
-          <div id="line-container" class="gantt-container">
-            <!--动态生成的产线及任务块-->
-            <div class="empty-state">等待接入调度引流...</div>
-          </div>
-        </section>
+        <aside class="column column-right">
+          <section class="panel panel-termination">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Termination</p>
+                <h2>终止条件</h2>
+              </div>
+            </div>
+
+            <div class="input-grid">
+              <label class="field-block">
+                <span class="field-label">总求解时长（秒）</span>
+                <input id="termination-time" type="number" min="1" step="1" value="60" />
+              </label>
+              <label class="field-block">
+                <span class="field-label">无改进时长（秒）</span>
+                <input id="termination-unimproved" type="number" min="1" step="1" placeholder="留空则不限制" />
+              </label>
+              <label class="field-block">
+                <span class="field-label">最大步数</span>
+                <input id="termination-steps" type="number" min="1" step="1" placeholder="留空则不限制" />
+              </label>
+            </div>
+
+            <label class="toggle-row toggle-row-strong">
+              <input id="termination-feasible" type="checkbox" />
+              <span>一旦得到硬约束可行解就提前结束</span>
+            </label>
+
+            <p class="field-hint">推荐先用 30-60 秒验证数据和约束组合，再逐步提高求解时间。</p>
+          </section>
+
+          <section class="panel panel-actions">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Execution</p>
+                <h2>执行控制</h2>
+              </div>
+            </div>
+
+            <div class="action-row stack-row">
+              <button id="btn-sync" class="btn btn-primary">同步求解</button>
+              <button id="btn-async" class="btn btn-secondary">异步求解</button>
+              <button id="btn-stop" class="btn btn-danger" disabled>停止异步任务</button>
+            </div>
+
+            <div class="execution-log">
+              <div class="log-label">当前状态</div>
+              <div id="execution-message" class="log-value">尚未开始。</div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Line Stats</p>
+                <h2>产线摘要</h2>
+              </div>
+            </div>
+            <div id="line-stats" class="line-stats empty-block">
+              暂无产线结果。
+            </div>
+          </section>
+        </aside>
       </main>
     </div>
-    
+
     <script type="module" src="./main.js"></script>
   </body>
 </html>
