@@ -58,6 +58,7 @@ const elements = {
   terminationSteps: document.getElementById('termination-steps'),
   terminationFeasible: document.getElementById('termination-feasible'),
   buttons: {
+    useSmallValidationSample: document.getElementById('btn-use-small-validation-sample'),
     useValidationSample: document.getElementById('btn-use-validation-sample'),
     validate: document.getElementById('btn-validate'),
     clear: document.getElementById('btn-clear'),
@@ -637,6 +638,24 @@ const runValidation = async () => {
   return summary;
 };
 
+const loadSmallValidationSample = async () => {
+  setStatus('running', '正在加载小样本验证数据...');
+  const response = await fetch(`${BASE_URL}/validation-workbook-small`);
+  if (!response.ok) {
+    throw new Error('内置小样本验证数据不存在，请先确认 docs/validation-data/validation-workbook-small.xlsx 已生成。');
+  }
+
+  const blob = await response.blob();
+  const file = new File(
+    [blob],
+    'validation-workbook-small.xlsx',
+    { type: blob.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+  );
+
+  applySelectedFile(file, '小样本验证数据已加载，正在执行数据验证。');
+  await runValidation();
+};
+
 const loadValidationSample = async () => {
   setStatus('running', '正在加载内置验证数据...');
   const response = await fetch(`${BASE_URL}/validation-workbook`);
@@ -771,6 +790,7 @@ const bindEvents = () => {
     applySelectedFile(file);
   });
 
+  elements.buttons.useSmallValidationSample.addEventListener('click', withGuard(loadSmallValidationSample));
   elements.buttons.useValidationSample.addEventListener('click', withGuard(loadValidationSample));
   elements.buttons.validate.addEventListener('click', withGuard(runValidation));
   elements.buttons.sync.addEventListener('click', withGuard(runSyncSolve));

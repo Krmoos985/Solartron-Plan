@@ -212,6 +212,31 @@ public class SchedulingController {
         }
     }
 
+    @GetMapping("/validation-workbook-small")
+    public ResponseEntity<Resource> getSmallValidationWorkbook() {
+        try {
+            Path workbookPath = Path.of("docs", "validation-data", "validation-workbook-small.xlsx")
+                    .toAbsolutePath()
+                    .normalize();
+            if (!Files.exists(workbookPath)) {
+                return ResponseEntity.notFound().build();
+            }
+
+            Resource resource = new FileSystemResource(workbookPath.toFile());
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename("validation-workbook-small.xlsx", StandardCharsets.UTF_8)
+                            .build()
+                            .toString())
+                    .contentType(MediaType.parseMediaType(
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                    .body(resource);
+        } catch (Exception e) {
+            log.error("璇诲彇灏忔牱鏈獙璇?workbook 澶辫触", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
     private Map<String, Object> buildResponse(
             MotherRollSchedule schedule,
             ExcelValidationSummaryDto validation,
