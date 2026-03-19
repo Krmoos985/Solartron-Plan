@@ -73,7 +73,8 @@ public class SchedulingController {
             LocalDateTime solveStart = parseStartTime(startTime);
             byte[] workbookBytes = file.getBytes();
             MotherRollSchedule problem = excelDataLoader.load(file.getInputStream(), solveStart);
-            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(), workbookBytes, problem);
+            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(),
+                    workbookBytes, problem);
             return ResponseEntity.ok(validation);
         } catch (Exception e) {
             log.error("Excel数据验证失败", e);
@@ -91,14 +92,15 @@ public class SchedulingController {
             SolveRequestConfigDto config = parseConfig(configJson);
             byte[] workbookBytes = file.getBytes();
             MotherRollSchedule problem = excelDataLoader.load(file.getInputStream(), solveStart);
-            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(), workbookBytes, problem);
+            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(),
+                    workbookBytes, problem);
 
-            List<String> selectionErrors = excelValidationService.validateSelection(config.getConstraints(), validation);
+            List<String> selectionErrors = excelValidationService.validateSelection(config.getConstraints(),
+                    validation);
             if (!selectionErrors.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of(
                         "errors", selectionErrors,
-                        "validation", validation
-                ));
+                        "validation", validation));
             }
 
             MotherRollSchedule solution = schedulingService.solve(problem, config);
@@ -119,21 +121,21 @@ public class SchedulingController {
             SolveRequestConfigDto config = parseConfig(configJson);
             byte[] workbookBytes = file.getBytes();
             MotherRollSchedule problem = excelDataLoader.load(file.getInputStream(), solveStart);
-            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(), workbookBytes, problem);
+            ExcelValidationSummaryDto validation = excelValidationService.analyze(file.getOriginalFilename(),
+                    workbookBytes, problem);
 
-            List<String> selectionErrors = excelValidationService.validateSelection(config.getConstraints(), validation);
+            List<String> selectionErrors = excelValidationService.validateSelection(config.getConstraints(),
+                    validation);
             if (!selectionErrors.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of(
                         "errors", selectionErrors,
-                        "validation", validation
-                ));
+                        "validation", validation));
             }
 
             String jobId = schedulingService.solveAsync(problem, config);
             return ResponseEntity.accepted().body(Map.of(
                     "jobId", jobId,
-                    "message", "Excel排程任务已提交"
-            ));
+                    "message", "Excel排程任务已提交"));
         } catch (Exception e) {
             log.error("Excel异步排程提交失败", e);
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -167,7 +169,8 @@ public class SchedulingController {
         response.put("status", status.name());
 
         if (partialOrFinalSolution != null) {
-            response.put("score", partialOrFinalSolution.getScore() != null ? partialOrFinalSolution.getScore().toString() : "N/A");
+            response.put("score",
+                    partialOrFinalSolution.getScore() != null ? partialOrFinalSolution.getScore().toString() : "N/A");
             if (status == SolverStatus.NOT_SOLVING) {
                 response.put("result", buildResponse(partialOrFinalSolution, null, null));
             }
